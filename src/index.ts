@@ -4,15 +4,14 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
-  IS_RAILWAY,
-  MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
-  SLACK_BOT_TOKEN,
-  STORE_DIR,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
-import { SlackChannel } from './channels/slack.js';
+import './channels/index.js';
+import {
+  getChannelFactory,
+  getRegisteredChannelNames,
+} from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -55,7 +54,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -144,7 +142,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+  const isMainGroup = group.isMain === true;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
@@ -254,7 +252,7 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
-  const isMain = group.folder === MAIN_GROUP_FOLDER;
+  const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
@@ -375,7 +373,7 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+          const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main groups, only act on trigger messages.
@@ -478,32 +476,25 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
-  // On Railway, only connect WhatsApp if auth exists or WHATSAPP_PHONE is set (for initial pairing)
-  const authDir = path.join(STORE_DIR, 'auth');
-  if (
-    !IS_RAILWAY ||
-    fs.existsSync(path.join(authDir, 'creds.json')) ||
-    process.env.WHATSAPP_PHONE
-  ) {
-    whatsapp = new WhatsAppChannel(channelOpts);
-    channels.push(whatsapp);
-    try {
-      await whatsapp.connect();
-    } catch (err) {
-      logger.error(
-        { err },
-        'WhatsApp failed to connect, continuing with other channels',
+  // Create and connect all registered channels.
+  // Each channel self-registers via the barrel import above.
+  // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
       );
+      continue;
     }
-  } else {
-    logger.info('No WhatsApp auth found - run /setup to configure a channel');
+    channels.push(channel);
+    await channel.connect();
   }
-
-  if (SLACK_BOT_TOKEN) {
-    const slack = new SlackChannel(channelOpts);
-    channels.push(slack);
-    await slack.connect();
+  if (channels.length === 0) {
+    logger.fatal('No channels connected');
+    process.exit(1);
   }
 
   // Start subsystems (independently of connection handler)
@@ -531,30 +522,19 @@ async function main(): Promise<void> {
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) =>
-      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups)
+          .map((ch) => ch.syncGroups!(force)),
+      );
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
-
-  // Log available groups periodically when none are registered (helps with initial setup)
-  if (IS_RAILWAY && Object.keys(registeredGroups).length === 0) {
-    const logAvailable = () => {
-      const chats = getAllChats().filter((c) => c.is_group);
-      if (chats.length > 0) {
-        logger.info(
-          { groups: chats.map((c) => ({ jid: c.jid, name: c.name })) },
-          'Available groups (none registered yet)',
-        );
-      }
-    };
-    setTimeout(logAvailable, 30_000);
-    setTimeout(logAvailable, 90_000);
-  }
-
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

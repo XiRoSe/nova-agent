@@ -1,786 +1,173 @@
 ---
 name: setup
-description: Initial NanoClaw setup on Railway. Configures API keys, asks which messaging channel to use, applies channel code on-demand, deploys, and registers — all in one flow.
+description: Run initial NanoClaw setup. Use when user wants to install dependencies, authenticate messaging channels, register their main channel, or start the background services. Triggers on "setup", "install", "configure nanoclaw", or first-time setup requests.
 ---
 
-# NanoClaw Setup (Railway)
+# NanoClaw Setup
 
-This skill is the single entry point for Railway deployments. It handles everything: environment config, on-demand code changes, deployment, and channel registration. Do NOT invoke the upstream `/add-whatsapp`, `/add-telegram`, `/add-slack`, or `/add-discord` skills — those are for local setups. This skill handles the full Railway flow inline.
+Run setup steps automatically. Only pause when user action is required (channel authentication, configuration choices). Setup uses `bash setup.sh` for bootstrap, then `npx tsx setup/index.ts --step <name>` for all other steps. Steps emit structured status blocks to stdout. Verbose logs go to `logs/setup.log`.
 
-**Principle:** Do the work. Only pause when genuine user action is required (creating a bot, scanning a QR code, pasting a token). If something is broken, fix it.
+**Principle:** When something is broken or missing, fix it. Don't tell the user to go fix it themselves unless it genuinely requires their manual action (e.g. authenticating a channel, pasting a secret token). If a dependency is missing, install it. If a service won't start, diagnose and repair. Ask the user for permission when needed, then do the work.
 
----
+**UX Note:** Use `AskUserQuestion` for all user-facing questions.
 
-## Critical: Multi-Channel Resilience Rules
+## 1. Bootstrap (Node.js + Dependencies)
 
-These rules apply to ALL code changes. They prevent one channel's failure from breaking others.
+Run `bash setup.sh` and parse the status block.
 
-### Rule 1: Wrap every channel connect() in try/catch
+- If NODE_OK=false → Node.js is missing or too old. Use `AskUserQuestion: Would you like me to install Node.js 22?` If confirmed:
+  - macOS: `brew install node@22` (if brew available) or install nvm then `nvm install 22`
+  - Linux: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`, or nvm
+  - After installing Node, re-run `bash setup.sh`
+- If DEPS_OK=false → Read `logs/setup.log`. Try: delete `node_modules` and `package-lock.json`, re-run `bash setup.sh`. If native module build fails, install build tools (`xcode-select --install` on macOS, `build-essential` on Linux), then retry.
+- If NATIVE_OK=false → better-sqlite3 failed to load. Install build tools and re-run.
+- Record PLATFORM and IS_WSL for later steps.
 
-In `src/index.ts`, every `await channel.connect()` MUST be wrapped:
+## 2. Check Environment
 
-```typescript
-try {
-  await channel.connect();
-} catch (err) {
-  logger.error(
-    { err },
-    '{Channel} failed to connect, continuing with other channels',
-  );
-}
-```
+Run `npx tsx setup/index.ts --step environment` and parse the status block.
 
-This prevents one broken channel from blocking the rest.
+- If HAS_AUTH=true → WhatsApp is already configured, note for step 5
+- If HAS_REGISTERED_GROUPS=true → note existing config, offer to skip or reconfigure
+- Record APPLE_CONTAINER and DOCKER values for step 3
 
-### Rule 2: WhatsApp must NOT call process.exit() on Railway
+## 3. Container Runtime
 
-In `src/channels/whatsapp.ts`, the logout handler calls `process.exit(0)` on disconnect. On Railway with multiple channels, this kills everything. The code must guard:
+### 3a. Choose runtime
 
-```typescript
-if (!IS_RAILWAY) {
-  process.exit(0);
-}
-```
+Check the preflight results for `APPLE_CONTAINER` and `DOCKER`, and the PLATFORM from step 1.
 
-If this guard is missing, add it. Check the `connection === 'close'` handler where `shouldReconnect` is false.
+- PLATFORM=linux → Docker (only option)
+- PLATFORM=macos + APPLE_CONTAINER=installed → Use `AskUserQuestion: Docker (cross-platform) or Apple Container (native macOS)?` If Apple Container, run `/convert-to-apple-container` now, then skip to 4c.
+- PLATFORM=macos + APPLE_CONTAINER=not_found → Docker
 
-### Rule 3: WhatsApp connect() must resolve on logout
+### 3a-docker. Install Docker
 
-`WhatsAppChannel.connect()` returns a Promise that only resolves when `onFirstOpen()` fires (on successful connection open). If WhatsApp is logged out (401), the promise hangs forever, blocking `main()` from reaching other channels.
+- DOCKER=running → continue to 4b
+- DOCKER=installed_not_running → start Docker: `open -a Docker` (macOS) or `sudo systemctl start docker` (Linux). Wait 15s, re-check with `docker info`.
+- DOCKER=not_found → Use `AskUserQuestion: Docker is required for running agents. Would you like me to install it?` If confirmed:
+  - macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download at https://docker.com/products/docker-desktop
+  - Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
 
-Fix: in the logout branch (where `shouldReconnect` is false), also call `onFirstOpen?.()` on Railway:
+### 3b. Apple Container conversion gate (if needed)
 
-```typescript
-if (IS_RAILWAY) {
-  onFirstOpen?.(); // Unblock main() so other channels can start
-}
-```
-
-### Rule 4: Channel tokens must read process.env on Railway
-
-Railway sets env vars directly on the process, not in `.env` files. Any channel constructor that reads tokens via `readEnvFile()` MUST fall back to `process.env`:
-
-```typescript
-const env = readEnvFile(['TOKEN_VAR']);
-const token = env.TOKEN_VAR || process.env.TOKEN_VAR;
-```
-
-Currently affects: **Slack** (reads `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` internally in constructor).
-Does NOT affect: Telegram, Discord (they receive tokens as constructor arguments from `config.ts`, which already reads `process.env`).
-
-### Rule 5: Unique folder names per registered group
-
-The `registered_groups` table has a UNIQUE constraint on `folder`. Each channel registration MUST use a different folder name:
-
-| Scenario                          | Folder naming                                               |
-| --------------------------------- | ----------------------------------------------------------- |
-| First/only channel                | `main`                                                      |
-| Adding a 2nd channel type         | `{channel}-main` (e.g., `slack-main`, `tg-main`, `dc-main`) |
-| Additional groups on same channel | `{channel}-{purpose}` (e.g., `slack-work`, `tg-family`)     |
-
-**CRITICAL:** Using `INSERT OR REPLACE` with the same folder as an existing group will DELETE the old registration. Always check existing registrations first.
-
----
-
-## 1. Railway Project
-
-### Check Railway CLI
+**If the chosen runtime is Apple Container**, you MUST check whether the source code has already been converted from Docker to Apple Container. Do NOT skip this step. Run:
 
 ```bash
-railway --version 2>&1
+grep -q "CONTAINER_RUNTIME_BIN = 'container'" src/container-runtime.ts && echo "ALREADY_CONVERTED" || echo "NEEDS_CONVERSION"
 ```
 
-If Railway CLI is missing, install it:
+**If NEEDS_CONVERSION**, the source code still uses Docker as the runtime. You MUST run the `/convert-to-apple-container` skill NOW, before proceeding to the build step.
+
+**If ALREADY_CONVERTED**, the code already uses Apple Container. Continue to 4c.
+
+**If the chosen runtime is Docker**, no conversion is needed. Continue to 4c.
+
+### 3c. Build and test
+
+Run `npx tsx setup/index.ts --step container -- --runtime <chosen>` and parse the status block.
+
+**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
+- Cache issue (stale layers): `docker builder prune -f` (Docker) or `container builder stop && container builder rm && container builder start` (Apple Container). Retry.
+- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+
+**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
+
+## 4. Claude Authentication (No Script)
+
+If HAS_ENV=true from step 2, read `.env` and check for `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. If present, confirm with user: keep or reconfigure?
+
+AskUserQuestion: Claude subscription (Pro/Max) vs Anthropic API key?
+
+**Subscription:** Tell user to run `claude setup-token` in another terminal, copy the token, add `CLAUDE_CODE_OAUTH_TOKEN=<token>` to `.env`. Do NOT collect the token in chat.
+
+**API key:** Tell user to add `ANTHROPIC_API_KEY=<key>` to `.env`.
+
+## 5. Set Up Channels
+
+AskUserQuestion (multiSelect): Which messaging channels do you want to enable?
+- WhatsApp (authenticates via QR code or pairing code)
+- Telegram (authenticates via bot token from @BotFather)
+- Slack (authenticates via Slack app with Socket Mode)
+- Discord (authenticates via Discord bot token)
+
+**Delegate to each selected channel's own skill.** Each channel skill handles its own code installation, authentication, registration, and JID resolution. This avoids duplicating channel-specific logic and ensures JIDs are always correct.
+
+For each selected channel, invoke its skill:
+
+- **WhatsApp:** Invoke `/add-whatsapp`
+- **Telegram:** Invoke `/add-telegram`
+- **Slack:** Invoke `/add-slack`
+- **Discord:** Invoke `/add-discord`
+
+Each skill will:
+1. Install the channel code (via `apply-skill`)
+2. Collect credentials/tokens and write to `.env`
+3. Authenticate (WhatsApp QR/pairing, or verify token-based connection)
+4. Register the chat with the correct JID format
+5. Build and verify
+
+**After all channel skills complete**, continue to step 6.
+
+## 6. Mount Allowlist
+
+AskUserQuestion: Agent access to external directories?
+
+**No:** `npx tsx setup/index.ts --step mounts -- --empty`
+**Yes:** Collect paths/permissions. `npx tsx setup/index.ts --step mounts -- --json '{"allowedRoots":[...],"blockedPatterns":[],"nonMainReadOnly":true}'`
+
+## 7. Start Service
+
+If service already running: unload first.
+- macOS: `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist`
+- Linux: `systemctl --user stop nanoclaw` (or `systemctl stop nanoclaw` if root)
+
+Run `npx tsx setup/index.ts --step service` and parse the status block.
+
+**If FALLBACK=wsl_no_systemd:** WSL without systemd detected. Tell user they can either enable systemd in WSL (`echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf` then restart WSL) or use the generated `start-nanoclaw.sh` wrapper.
+
+**If DOCKER_GROUP_STALE=true:** The user was added to the docker group after their session started — the systemd service can't reach the Docker socket. Ask user to run these two commands:
+
+1. Immediate fix: `sudo setfacl -m u:$(whoami):rw /var/run/docker.sock`
+2. Persistent fix (re-applies after every Docker restart):
 ```bash
-npm i -g @railway/cli
+sudo mkdir -p /etc/systemd/system/docker.service.d
+sudo tee /etc/systemd/system/docker.service.d/socket-acl.conf << 'EOF'
+[Service]
+ExecStartPost=/usr/bin/setfacl -m u:USERNAME:rw /var/run/docker.sock
+EOF
+sudo systemctl daemon-reload
 ```
-
-### Check if already linked
-
-```bash
-railway status 2>&1
-```
-
-If it shows project/environment/service → already deployed and linked, skip to step 2.
-
-If NOT linked, check if the user is logged in:
-```bash
-railway whoami 2>&1
-```
-
-If not logged in:
-```bash
-railway login
-```
-
-### Deploy or link
-
-AskUserQuestion: Have you already deployed NanoClaw on Railway?
-- **Yes, I already have a Railway project** → proceed to "Link to existing project"
-- **No, I need to deploy** → proceed to "Deploy via CLI"
-
-### Deploy via CLI
-
-#### 1. Get workspace
-
-```bash
-railway whoami --json 2>&1
-```
-
-Parse the `workspaces` array from the JSON output. If more than one workspace, AskUserQuestion: Which workspace to deploy to? (list workspace names as options).
-
-#### 2. Collect Anthropic API key
-
-AskUserQuestion: What is your Anthropic API key? (This is the only required variable for deployment)
-
-#### 3. Create project
-
-```bash
-railway init -n "NanoClaw" -w "<WORKSPACE_NAME>"
-```
-
-#### 4. Deploy template
-
-```bash
-railway deploy -t nanoclaw -v "ANTHROPIC_API_KEY=<KEY>"
-```
-
-This will:
-1. Fork the NanoClaw repo to the user's GitHub account
-2. Create a Railway service connected to that fork
-3. Start the initial deployment
-
-#### 5. Link CLI to the service
-
-After deploy completes, the project is already linked (from `railway init`). But we need to select the specific service:
-
-```bash
-railway service nanoclaw
-```
-
-If that fails, try listing services and selecting by name:
-```bash
-railway service list
-```
-
-Then verify:
-```bash
-railway status 2>&1
-```
-
-**Fallback (if CLI deploy fails):** Guide the user to deploy via the web:
-
-> Click this link to deploy: **[Deploy on Railway](https://railway.com/deploy/nanoclaw?utm_medium=integration&utm_source=template&utm_campaign=generic)**
->
-> Railway will fork the repo to your GitHub account and deploy from that fork. Come back here when done.
-
-Then link to the project (see "Link to existing project" below).
-
-### Link to existing project
-
-**IMPORTANT:** `railway link` is interactive by default. In non-interactive environments, you MUST provide all flags:
-
-First, get the workspace list:
-```bash
-railway whoami --json 2>&1
-```
-
-Then link with explicit flags:
-```bash
-railway link --workspace "<WORKSPACE_NAME>" --project "NanoClaw"
-```
-
-If the project name is different (e.g., from a template deploy), find it first:
-```bash
-railway list 2>&1
-```
-
-After linking, select the service:
-```bash
-railway service nanoclaw
-```
-
-Verify the link:
-```bash
-railway status 2>&1
-```
-
-Should show project name, environment (production), and service.
-
-### Ensure local repo matches Railway's fork
-
-Railway template creates a fork on the user's GitHub. The local clone must point to that fork so `git push` triggers Railway rebuilds.
-
-```bash
-git remote get-url origin 2>&1
-```
-
-Get the user's GitHub username:
-```bash
-gh api user --jq '.login' 2>&1
-```
-
-The local remote should point to the user's fork (e.g., `https://github.com/<USERNAME>/nanoclaw-railway.git` or similar). If it points to the upstream `qwibitai/NanoClaw` instead, update it:
-
-```bash
-git remote set-url origin https://github.com/<USERNAME>/<REPO_NAME>.git
-```
-
-Verify with `git remote -v` and test with `git push --dry-run`.
-
-## 2. Configure Environment
-
-First check what's already configured:
-```bash
-railway variables 2>&1
-```
-
-Check for existing `ANTHROPIC_API_KEY`, `ASSISTANT_NAME`, `TZ`. Only ask for what's missing.
-
-- If `ANTHROPIC_API_KEY` is missing → AskUserQuestion: Anthropic API key?
-- If `ASSISTANT_NAME` is missing → AskUserQuestion: Bot name? (default: Andy)
-- If `TZ` is missing → AskUserQuestion: Timezone? (detect from system with `date +%Z` or default to UTC)
-
-Set missing vars via `railway variable set`:
-```bash
-railway variable set ANTHROPIC_API_KEY="..." ASSISTANT_NAME="..." TZ="..."
-```
-
-Only include the variables that need to be set.
-
-## 3. Choose Channel
-
-First, check what's already configured:
-
-```bash
-railway variables
-```
-
-Check for existing tokens (`WHATSAPP_PHONE`, `TELEGRAM_BOT_TOKEN`, `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`) and existing channel source files (`src/channels/{channel}.ts`).
-
-If channels already exist, ask if the user wants to add another or reconfigure.
-
-AskUserQuestion: Which messaging channel?
-
-- **WhatsApp**
-- **Telegram**
-- **Slack**
-- **Discord**
-
-Then proceed with the unified flow below. All 4 channels follow the same Phase A → E structure.
-
----
-
-## Channel Reference
-
-| Channel  | npm package               | Already in source? | Token env var(s)                     | Source file   | Constructor                                               |
-| -------- | ------------------------- | ------------------ | ------------------------------------ | ------------- | --------------------------------------------------------- |
-| WhatsApp | `@whiskeysockets/baileys` | **Yes**            | `WHATSAPP_PHONE`                     | `whatsapp.ts` | `new WhatsAppChannel(channelOpts)`                        |
-| Telegram | `grammy`                  | No                 | `TELEGRAM_BOT_TOKEN`                 | `telegram.ts` | `new TelegramChannel(TOKEN, channelOpts)`                 |
-| Slack    | `@slack/bolt`             | No                 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | `slack.ts`    | `new SlackChannel(channelOpts)` (reads tokens internally) |
-| Discord  | `discord.js`              | No                 | `DISCORD_BOT_TOKEN`                  | `discord.ts`  | `new DiscordChannel(TOKEN, channelOpts)`                  |
-
----
-
-## Phase A: Apply Code Changes
-
-**WhatsApp:** Skip code changes — WhatsApp is the default channel, already in the source tree. But verify the resilience rules are applied (Rules 2 and 3 in whatsapp.ts, Rule 1 in index.ts).
-
-**Telegram / Slack / Discord:**
-
-### 1. Check if already applied
-
-Check ALL of these:
-- `src/channels/{channel}.ts` exists
-- `src/index.ts` imports and uses the channel
-- `src/config.ts` exports the token variable(s)
-
-If ALL three are true → the channel is fully wired. **Skip ALL of Phase A** (steps 2–9). Do NOT re-check or modify resilience rules, do NOT re-apply fixes, do NOT rebuild — the code is already correct.
-
-If only the channel file exists but isn't wired into index.ts/config.ts → skip to step 5 (edit config.ts).
-
-### 2. Copy channel files
-
-```bash
-cp .claude/skills/add-{channel}/add/src/channels/{channel}.ts src/channels/
-cp .claude/skills/add-{channel}/add/src/channels/{channel}.test.ts src/channels/
-```
-
-### 3. Apply Railway compatibility fixes to copied files
-
-The upstream skill templates are designed for local `.env`-based setups. After copying, apply these fixes for Railway:
-
-**Slack only — fix token reading (Rule 4):**
-
-In the just-copied `src/channels/slack.ts`, find the constructor's token reading block and add `process.env` fallback:
-
-```typescript
-// BEFORE (upstream template):
-const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
-const botToken = env.SLACK_BOT_TOKEN;
-const appToken = env.SLACK_APP_TOKEN;
-
-// AFTER (Railway-compatible):
-const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
-const botToken = env.SLACK_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
-const appToken = env.SLACK_APP_TOKEN || process.env.SLACK_APP_TOKEN;
-```
-
-Also fix the TypeScript type error on `msg.user` (which is `string | undefined`):
-
-```typescript
-// BEFORE:
-(await this.resolveUserName(msg.user)) ||
-
-// AFTER:
-(await this.resolveUserName(msg.user ?? '')) ||
-```
-
-**Telegram / Discord:** No post-copy fixes needed — they receive tokens as constructor arguments.
-
-### 4. Install npm package
-
-```bash
-npm install {package}
-```
-
-### 5. Edit `src/config.ts`
-
-Add the token env var(s) to the `readEnvFile()` call and export them.
-
-**Telegram:**
-
-```typescript
-const envConfig = readEnvFile([
-  'ASSISTANT_NAME',
-  'ASSISTANT_HAS_OWN_NUMBER',
-  'TELEGRAM_BOT_TOKEN',
-]);
-export const TELEGRAM_BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
-```
-
-**Discord:** Same pattern with `DISCORD_BOT_TOKEN`.
-
-**Slack:**
-
-```typescript
-const envConfig = readEnvFile([
-  'ASSISTANT_NAME',
-  'ASSISTANT_HAS_OWN_NUMBER',
-  'SLACK_BOT_TOKEN',
-  'SLACK_APP_TOKEN',
-]);
-export const SLACK_BOT_TOKEN =
-  process.env.SLACK_BOT_TOKEN || envConfig.SLACK_BOT_TOKEN || '';
-export const SLACK_APP_TOKEN =
-  process.env.SLACK_APP_TOKEN || envConfig.SLACK_APP_TOKEN || '';
-```
-
-### 6. Edit `src/index.ts`
-
-Add import and conditional channel creation in `main()`, after the WhatsApp block. **IMPORTANT:** Apply Rule 1 — wrap the WhatsApp connect AND the new channel connect in try/catch.
-
-Check and fix if needed — the WhatsApp block should look like:
-
-```typescript
-if (...) {
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  try {
-    await whatsapp.connect();
-  } catch (err) {
-    logger.error({ err }, 'WhatsApp failed to connect, continuing with other channels');
-  }
-}
-```
-
-Then add the new channel AFTER the WhatsApp block:
-
-**Telegram:**
-
-```typescript
-import { TelegramChannel } from './channels/telegram.js';
-import { ..., TELEGRAM_BOT_TOKEN } from './config.js';
-
-if (TELEGRAM_BOT_TOKEN) {
-  const telegram = new TelegramChannel(TELEGRAM_BOT_TOKEN, channelOpts);
-  channels.push(telegram);
-  try {
-    await telegram.connect();
-  } catch (err) {
-    logger.error({ err }, 'Telegram failed to connect, continuing with other channels');
-  }
-}
-```
-
-**Slack:**
-
-```typescript
-import { SlackChannel } from './channels/slack.js';
-import { ..., SLACK_BOT_TOKEN } from './config.js';
-
-if (SLACK_BOT_TOKEN) {
-  const slack = new SlackChannel(channelOpts);
-  channels.push(slack);
-  try {
-    await slack.connect();
-  } catch (err) {
-    logger.error({ err }, 'Slack failed to connect, continuing with other channels');
-  }
-}
-```
-
-**Discord:**
-
-```typescript
-import { DiscordChannel } from './channels/discord.js';
-import { ..., DISCORD_BOT_TOKEN } from './config.js';
-
-if (DISCORD_BOT_TOKEN) {
-  const discord = new DiscordChannel(DISCORD_BOT_TOKEN, channelOpts);
-  channels.push(discord);
-  try {
-    await discord.connect();
-  } catch (err) {
-    logger.error({ err }, 'Discord failed to connect, continuing with other channels');
-  }
-}
-```
-
-### 7. Verify WhatsApp resilience (Rules 2 + 3)
-
-Read `src/channels/whatsapp.ts` and check the `connection === 'close'` handler:
-
-**Rule 2 — No process.exit on Railway:**
-Find the block where `shouldReconnect` is false. It must NOT call `process.exit()` on Railway:
-
-```typescript
-} else {
-  logger.info('Logged out. Run /setup to re-authenticate.');
-  if (IS_RAILWAY) {
-    onFirstOpen?.();  // Rule 3: unblock main()
-  } else {
-    process.exit(0);
-  }
-}
-```
-
-**Rule 3 — Resolve connect() on logout:**
-In the same block, `onFirstOpen?.()` must be called on Railway so the `connect()` Promise resolves and `main()` can proceed to start other channels.
-
-If either fix is missing, apply them.
-
-### 8. Install dependencies and build
-
-```bash
-npm install && npm run build
-```
-
-`npm install` is required before build — without it, `tsc` won't be found and the build will fail. Fix any TypeScript errors before proceeding.
-
-### 9. Commit and push
-
-```bash
-git add src/channels/{channel}.ts src/channels/{channel}.test.ts src/index.ts src/config.ts src/channels/whatsapp.ts package.json package-lock.json
-git commit -m "feat: add {channel} channel support"
-git push
-```
-
-This triggers a Railway rebuild. No need to redeploy yet — we'll set env vars first and redeploy once.
-
----
-
-## Phase B: Bot/Account Setup Guidance
-
-Guide the user through creating the bot or configuring the account. They need the credentials for Phase C.
-
-### WhatsApp
-
-AskUserQuestion: WhatsApp phone number (with country code, e.g. +1234567890)?
-
-No bot creation needed — WhatsApp uses phone number + pairing code.
-
-### Telegram
-
-> 1. Open Telegram and search for `@BotFather`
-> 2. Send `/newbot` and follow prompts:
->    - Bot name: Something friendly (e.g., "Andy Assistant")
->    - Bot username: Must end with "bot" (e.g., "andy_ai_bot")
-> 3. Copy the bot token (looks like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
->
-> **Important for group chats**: Disable Group Privacy so the bot can see all messages:
->
-> 1. In @BotFather, send `/mybots` and select your bot
-> 2. Go to **Bot Settings** > **Group Privacy** > **Turn off**
-
-### Slack
-
-> 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**
-> 2. Enable **Socket Mode** (sidebar) → generate App-Level Token (`xapp-...`) — copy it
-> 3. **Event Subscriptions** → Enable → Subscribe to bot events: `message.channels`, `message.groups`, `message.im`
-> 4. **OAuth & Permissions** → Add Bot Token Scopes: `chat:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`
-> 5. **Install App** → Install to Workspace → copy Bot User OAuth Token (`xoxb-...`)
-
-### Discord
-
-> 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-> 2. Click **New Application** → name it (e.g., "Andy Assistant")
-> 3. Go to **Bot** tab → **Reset Token** → copy the token immediately
-> 4. Under **Privileged Gateway Intents**, enable:
->    - **Message Content Intent** (required)
->    - **Server Members Intent** (optional)
-> 5. Go to **OAuth2** > **URL Generator**:
->    - Scopes: `bot`
->    - Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
->    - Copy the generated URL and open it to invite the bot to your server
-
----
-
-## Phase C: Set Env Vars + Deploy
-
-### 1. Collect credentials
-
-AskUserQuestion to collect the token(s)/phone number from the user.
-
-### 2. Set env vars on Railway
-
-**WhatsApp:** `railway variable set WHATSAPP_PHONE="+..."`
-
-**Telegram:** `railway variable set TELEGRAM_BOT_TOKEN="..."`
-
-**Slack:** `railway variable set SLACK_BOT_TOKEN="..." SLACK_APP_TOKEN="..."`
-
-**Discord:** `railway variable set DISCORD_BOT_TOKEN="..."`
-
-### 3. Deploy
-
-Use `railway up --detach` to deploy the local code directly — this is faster and more reliable than waiting for a git-triggered build:
-
-```bash
-railway up --detach
-```
-
-Then wait ~90s for build + deploy. If `railway up` fails, fall back to `railway redeploy --yes`.
-
-### 4. Wait and verify connection
-
-Wait for the deploy, then check logs:
-
-```bash
-sleep 90 && railway logs --tail 50
-```
-
-If the build hasn't finished, wait and retry. Look for "State loaded" with a `groupCount` and channel connection messages.
-
-**WhatsApp (fresh pairing):** Look for `WhatsApp pairing code: XXXXXXXX`. Display it and instruct:
-
-> 1. Open WhatsApp on your phone
-> 2. Go to **Settings > Linked Devices > Link a Device**
-> 3. Tap **Link with phone number instead**
-> 4. Enter the pairing code displayed above
-
-The pairing code expires in ~20s. If expired, redeploy to get a new one.
-
-**WhatsApp (stale auth):** If logs show a 401 error + "Logged out", the auth creds are stale. Clear them:
-
-```bash
-railway ssh "rm -rf /data/store/auth && echo 'Auth cleared'"
-railway redeploy --yes
-```
-
-Then wait for the new pairing code.
-
-After linking, check logs for `Connected to WhatsApp`.
-
-**Telegram:** Look for bot started / connected message.
-
-**Slack:** Look for `Connected to Slack` message.
-
-**Discord:** Look for Discord logged in message.
-
----
-
-## Phase D: Register Channel
-
-### 1. Check existing registrations and get ASSISTANT_NAME
-
-```bash
-railway ssh "node -e \"
-const db = require('better-sqlite3')('/data/store/messages.db');
-console.log('=== Registered Groups ===');
-console.log(JSON.stringify(db.prepare('SELECT * FROM registered_groups').all(), null, 2));
-console.log('=== Available Chats ===');
-console.log(JSON.stringify(db.prepare('SELECT jid, name, is_group FROM chats ORDER BY last_message_time DESC LIMIT 20').all(), null, 2));
-\""
-```
-
-Also read ASSISTANT_NAME:
-
-```bash
-railway variables
-```
-
-### 2. Determine folder name (Rule 5)
-
-Check existing registrations from step 1.
-
-- If NO existing registrations → use `main`
-- If registrations exist and this is a NEW channel type → use `{channel}-main` (e.g., `slack-main`, `tg-main`, `dc-main`)
-- NEVER reuse a folder name that's already taken
-
-### 3. Guide user to create/join chat and get the ID
-
-**WhatsApp:**
-
-> 1. Open WhatsApp, tap **New Group**
-> 2. Add the bot's phone number (the WHATSAPP_PHONE number) as a participant
-> 3. Name the group the same as the bot name (e.g., "Andy")
-> 4. Create the group and confirm when done
-
-WhatsApp needs a redeploy to sync group metadata before we can get the JID:
-
-1. Create group folder first (before redeploy to avoid extra redeploy):
-
-   ```bash
-   railway ssh "mkdir -p /data/groups/<FOLDER> && cat > /data/groups/<FOLDER>/CLAUDE.md << 'EOF'
-   # <ASSISTANT_NAME> — Main Group
-
-   You are <ASSISTANT_NAME>, a personal assistant. Be helpful, concise, and friendly.
-   EOF"
-   ```
-
-2. Redeploy to trigger group sync:
-   ```bash
-   railway redeploy --yes
-   ```
-3. Wait ~20s, then find the group JID:
-   ```bash
-   railway ssh "node -e \"const db = require('better-sqlite3')('/data/store/messages.db'); console.log(JSON.stringify(db.prepare('SELECT jid, name, is_group FROM chats WHERE is_group = 1 ORDER BY last_message_time DESC').all(), null, 2));\""
-   ```
-4. Auto-select the group whose name matches ASSISTANT_NAME. If no match, show the list and AskUserQuestion.
-
-**Telegram:**
-
-> 1. Add the bot to a Telegram group (or open a DM with the bot)
-> 2. Send `/chatid` in the group — the bot will reply with the chat ID
-> 3. The ID format is `tg:123456789` or `tg:-1001234567890`
-
-AskUserQuestion: What is the chat ID?
-
-**Slack:**
-
-> 1. Add the bot to a Slack channel: right-click channel → **View channel details** → **Integrations** → **Add apps**
-> 2. Get the channel ID from the URL: `https://app.slack.com/client/T.../C0123456789` — the `C...` part
-> 3. The ID format is `slack:C0123456789`
-
-AskUserQuestion: What is the channel ID?
-
-**Discord:**
-
-> 1. Enable Developer Mode: **User Settings** > **Advanced** > **Developer Mode**
-> 2. Right-click the text channel → **Copy Channel ID**
-> 3. The ID format is `dc:1234567890123456`
-
-AskUserQuestion: What is the channel ID?
-
-### 4. Create group folder and register — single SSH command
-
-Run both the folder creation and DB registration in one SSH call to avoid multiple round trips:
-
-```bash
-railway ssh "
-mkdir -p /data/groups/<FOLDER> &&
-cat > /data/groups/<FOLDER>/CLAUDE.md << 'CEOF'
-# <ASSISTANT_NAME> — <DISPLAY_NAME>
-
-You are <ASSISTANT_NAME>, a personal assistant. Be helpful, concise, and friendly.
-CEOF
-
-node -e \"
-const db = require('better-sqlite3')('/data/store/messages.db');
-db.prepare('INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, requires_trigger) VALUES (?, ?, ?, ?, ?, ?)').run('<JID>', '<DISPLAY_NAME>', '<FOLDER>', '@<ASSISTANT_NAME>', new Date().toISOString(), 0);
-console.log(JSON.stringify(db.prepare('SELECT * FROM registered_groups').all(), null, 2));
-\"
-"
-```
-
-Replace:
-
-- `<JID>` — full prefixed ID (e.g., `slack:C0123456789`, `tg:-1001234567890`, `dc:1234567890123456`, `120363...@g.us`)
-- `<DISPLAY_NAME>` — human-readable name (e.g., "Andy")
-- `<FOLDER>` — unique folder name determined in step 2
-- `<ASSISTANT_NAME>` — bot name from env vars
-
-NOTE: `requires_trigger` is `0` (false) for the main group — every message gets a response.
-
-**IMPORTANT:** After running, verify the output shows ALL expected registrations (both old and new). If an old registration disappeared, the folder UNIQUE constraint was violated — fix immediately.
-
-### 5. Redeploy to load registration
-
-```bash
-railway redeploy --yes
-```
-
-NOTE for WhatsApp: Two redeploys are unavoidable — the first discovers the group JID (via WhatsApp sync), the second loads the registration. The CLAUDE.md is created before the first redeploy to avoid a third.
-
----
-
-## Phase E: Verify
-
-1. Wait ~15-20s, then check logs:
-
-   ```bash
-   railway logs --tail 30
-   ```
-
-   Confirm `groupCount` in the "State loaded" log line matches the expected number of registered groups.
-
-2. Ask the user to send a test message in the registered chat/channel:
-   - Main channel: any message works (no trigger needed)
-
-3. Check logs for the agent response:
-   ```bash
-   railway logs --tail 30
-   ```
-
----
-
-## Final Verification
-
-- `railway logs --tail 50` to confirm everything is connected and responding
-- Congratulate the user — setup is complete!
-
-## How the bot works
-
-- **Main channel**: The registered channel with folder "main" (or `{channel}-main`) does NOT require any trigger — every message gets a response
-- **Additional channels**: Register more channels with different folder names. In non-main channels, users must use the trigger (e.g., `@Andy`)
-- **Multiple channel types**: You can run multiple channel types simultaneously (e.g., WhatsApp + Telegram + Slack). Run `/setup` again to add another channel — Phase A will add the code, and existing channels keep working
+Replace `USERNAME` with the actual username (from `whoami`). Run the two `sudo` commands separately — the `tee` heredoc first, then `daemon-reload`. After user confirms setfacl ran, re-run the service step.
+
+**If SERVICE_LOADED=false:**
+- Read `logs/setup.log` for the error.
+- macOS: check `launchctl list | grep nanoclaw`. If PID=`-` and status non-zero, read `logs/nanoclaw.error.log`.
+- Linux: check `systemctl --user status nanoclaw`.
+- Re-run the service step after fixing.
+
+## 8. Verify
+
+Run `npx tsx setup/index.ts --step verify` and parse the status block.
+
+**If STATUS=failed, fix each:**
+- SERVICE=stopped → `npm run build`, then restart: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw` (macOS) or `systemctl --user restart nanoclaw` (Linux) or `bash start-nanoclaw.sh` (WSL nohup)
+- SERVICE=not_found → re-run step 7
+- CREDENTIALS=missing → re-run step 4
+- CHANNEL_AUTH shows `not_found` for any channel → re-invoke that channel's skill (e.g. `/add-telegram`)
+- REGISTERED_GROUPS=0 → re-invoke the channel skills from step 5
+- MOUNT_ALLOWLIST=missing → `npx tsx setup/index.ts --step mounts -- --empty`
+
+Tell user to test: send a message in their registered chat. Show: `tail -f logs/nanoclaw.log`
 
 ## Troubleshooting
 
-### Service crashes immediately after deploy
+**Service not starting:** Check `logs/nanoclaw.error.log`. Common: wrong Node path (re-run step 7), missing `.env` (step 4), missing channel credentials (re-invoke channel skill).
 
-Check `railway logs --tail 50`. Common causes:
+**Container agent fails ("Claude Code process exited with code 1"):** Ensure the container runtime is running — `open -a Docker` (macOS Docker), `container system start` (Apple Container), or `sudo systemctl start docker` (Linux). Check container logs in `groups/main/logs/container-*.log`.
 
-- **WhatsApp 401 + process.exit**: Apply Rule 2 (no process.exit on Railway)
-- **Channel constructor throws**: Apply Rule 4 (process.env fallback for tokens)
-- **connect() hangs then times out**: Apply Rule 3 (resolve promise on logout)
+**No response to messages:** Check trigger pattern. Main channel doesn't need prefix. Check DB: `npx tsx setup/index.ts --step verify`. Check `logs/nanoclaw.log`.
 
-### New channel doesn't start but old channel works
+**Channel not connecting:** Verify the channel's credentials are set in `.env`. Channels auto-enable when their credentials are present. For WhatsApp: check `store/auth/creds.json` exists. For token-based channels: check token values in `.env`. Restart the service after any `.env` change.
 
-- **connect() blocked**: WhatsApp's connect() Promise never resolved → Apply Rule 3
-- **try/catch missing**: Old channel threw, killed main() → Apply Rule 1
-
-### Registration disappears after adding new channel
-
-- **Folder UNIQUE conflict**: Both channels used the same folder name → Apply Rule 5, use different folder names
-
-### WhatsApp shows pairing code but then gets 401
-
-- Stale auth creds exist: `railway ssh "rm -rf /data/store/auth"` then `railway redeploy --yes`
-
-### Build takes too long / redeploy not picking up changes
-
-- Use `railway up --detach` instead of `railway redeploy --yes` to push local code directly
-- Check if a git-triggered build is already in progress (builds queue, don't overlap)
+**Unload service:** macOS: `launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist` | Linux: `systemctl --user stop nanoclaw`

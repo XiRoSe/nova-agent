@@ -6,32 +6,19 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets are NOT read here — they stay on disk and are loaded only
 // where needed (container-runner.ts) to avoid leaking to child processes.
-const envConfig = readEnvFile([
-  'ASSISTANT_NAME',
-  'ASSISTANT_HAS_OWN_NUMBER',
-  'SLACK_BOT_TOKEN',
-  'SLACK_APP_TOKEN',
-]);
+const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
-export const SLACK_BOT_TOKEN =
-  process.env.SLACK_BOT_TOKEN || envConfig.SLACK_BOT_TOKEN || '';
-export const SLACK_APP_TOKEN =
-  process.env.SLACK_APP_TOKEN || envConfig.SLACK_APP_TOKEN || '';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
-
-// Railway deployment detection
-export const IS_RAILWAY = !!process.env.RAILWAY_ENVIRONMENT;
-const RAILWAY_VOLUME = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -40,16 +27,9 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'mount-allowlist.json',
 );
-export const STORE_DIR = IS_RAILWAY
-  ? path.join(RAILWAY_VOLUME, 'store')
-  : path.resolve(PROJECT_ROOT, 'store');
-export const GROUPS_DIR = IS_RAILWAY
-  ? path.join(RAILWAY_VOLUME, 'groups')
-  : path.resolve(PROJECT_ROOT, 'groups');
-export const DATA_DIR = IS_RAILWAY
-  ? path.join(RAILWAY_VOLUME, 'data')
-  : path.resolve(PROJECT_ROOT, 'data');
-export const MAIN_GROUP_FOLDER = 'main';
+export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
+export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
+export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
