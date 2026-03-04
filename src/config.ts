@@ -39,6 +39,12 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'mount-allowlist.json',
 );
+export const SENDER_ALLOWLIST_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'nanoclaw',
+  'sender-allowlist.json',
+);
 export const STORE_DIR = IS_RAILWAY
   ? path.join(RAILWAY_VOLUME, 'store')
   : path.resolve(PROJECT_ROOT, 'store');
