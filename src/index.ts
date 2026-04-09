@@ -658,8 +658,30 @@ async function main(): Promise<void> {
     channels.push(channel);
     await channel.connect();
   }
-  if (channels.length === 0) {
-    logger.warn('No channels connected yet — agent will wait for channel configuration');
+  // Add a virtual platform channel so agent output can be captured via sendMessage
+  const platformChannel: Channel = {
+    name: 'platform',
+    connect: async () => {},
+    sendMessage: async (jid: string, text: string) => {
+      // Store bot messages so the HTTP API can retrieve them
+      storeMessage({
+        id: `bot-${Date.now()}`,
+        chat_jid: jid,
+        sender: ASSISTANT_NAME,
+        sender_name: ASSISTANT_NAME,
+        content: text,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        is_bot_message: true,
+      });
+    },
+    ownsChatJid: (jid: string) => jid.startsWith('platform:'),
+  };
+  channels.push(platformChannel);
+
+  if (channels.length <= 1) {
+    // Only the platform channel is connected — no external channels
+    logger.warn('No external channels connected yet — platform API is available');
   }
 
   // Auto-register main group (zero-config Railway deploy).
@@ -864,8 +886,6 @@ async function main(): Promise<void> {
             is_bot_message: false,
           });
 
-          // Collect responses by intercepting the output callback
-          const responses: string[] = [];
           const group = registeredGroups[PLATFORM_JID];
           if (!group) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -873,23 +893,38 @@ async function main(): Promise<void> {
             return;
           }
 
-          // Process through the agent
-          const result = await processGroupMessages(PLATFORM_JID);
+          // Enqueue the message for processing
+          queue.enqueueMessageCheck(PLATFORM_JID);
 
-          // Get agent's response from stored messages
-          const agentMessages = getMessagesSince(
-            PLATFORM_JID,
-            now,
-            ASSISTANT_NAME,
-          ).filter((m) => m.is_from_me || m.is_bot_message);
+          // Wait for agent to process and collect output via platformResponses
+          const maxWait = 90000; // 90 seconds
+          const pollInterval = 1000;
+          let waited = 0;
+          let responseText = '';
 
-          const responseText = agentMessages
-            .map((m) => m.content)
-            .join('\n')
-            || 'Agent processed the message but produced no text response.';
+          while (waited < maxWait) {
+            await new Promise((r) => setTimeout(r, pollInterval));
+            waited += pollInterval;
+
+            // Check for new bot messages after our timestamp
+            const agentMessages = getMessagesSince(
+              PLATFORM_JID,
+              now,
+              ASSISTANT_NAME,
+            ).filter((m) => m.is_from_me || m.is_bot_message);
+
+            if (agentMessages.length > 0) {
+              responseText = agentMessages.map((m) => m.content).join('\n');
+              break;
+            }
+          }
+
+          if (!responseText) {
+            responseText = 'Agent is still processing. Check back shortly.';
+          }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ response: responseText, status: result }));
+          res.end(JSON.stringify({ response: responseText }));
         } catch (err) {
           logger.error({ err }, 'Platform API chat error');
           res.writeHead(500, { 'Content-Type': 'application/json' });
