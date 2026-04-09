@@ -52,7 +52,7 @@ function prepareWorkspace(
     const targetDir = path.join(GROUPS_DIR, folder);
     const targetMd = path.join(targetDir, 'CLAUDE.md');
     const templateMd = path.join(templateGroupsDir, folder, 'CLAUDE.md');
-    if (!fs.existsSync(targetMd) && fs.existsSync(templateMd)) {
+    if (fs.existsSync(templateMd)) {
       fs.mkdirSync(targetDir, { recursive: true });
       let content = fs.readFileSync(templateMd, 'utf-8');
       if (ASSISTANT_NAME !== 'Andy') {
