@@ -658,8 +658,8 @@ async function main(): Promise<void> {
     channels.push(channel);
     await channel.connect();
   }
-  // Platform response callbacks — resolved when agent sends a message back
-  const platformResponseCallbacks: Array<(text: string) => void> = [];
+  // Platform responses — filled by the platform channel's sendMessage
+  const platformResponses: string[] = [];
 
   // Add a virtual platform channel so agent output can be captured via sendMessage
   const platformChannel: Channel = {
@@ -680,9 +680,8 @@ async function main(): Promise<void> {
         is_from_me: true,
         is_bot_message: true,
       });
-      // Resolve any waiting HTTP request
-      const cb = platformResponseCallbacks.shift();
-      if (cb) cb(text);
+      // Push to response array for HTTP API polling
+      platformResponses.push(text);
     },
   };
   channels.push(platformChannel);
@@ -904,18 +903,16 @@ async function main(): Promise<void> {
           // Process messages synchronously — wait for the agent to complete
           queue.enqueueMessageCheck(PLATFORM_JID);
 
-          // Poll for bot responses stored by the platform channel
+          // Wait for the platform channel's sendMessage to store a bot response
           const maxWait = 120000;
           const start = Date.now();
           let responseText = '';
 
           while (Date.now() - start < maxWait) {
             await new Promise((r) => setTimeout(r, 500));
-            // Check for bot messages NEWER than our message
-            const botMsgs = getMessagesSince(PLATFORM_JID, now, ASSISTANT_NAME)
-              .filter((m) => m.is_from_me || m.is_bot_message);
-            if (botMsgs.length > 0) {
-              responseText = botMsgs.map((m) => m.content).join('\n');
+            // Check platformResponses array (filled by platform channel sendMessage)
+            if (platformResponses.length > 0) {
+              responseText = platformResponses.splice(0).join('\n');
               break;
             }
           }
