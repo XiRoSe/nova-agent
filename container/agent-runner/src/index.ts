@@ -199,7 +199,7 @@ function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
   ])];
 
   return async (input, _toolUseId, _context) => {
-    const preInput = input as PreToolUseHookInput;
+    const preInput = input as any;
     const command = (preInput.tool_input as { command?: string })?.command;
     if (!command) return {};
 
