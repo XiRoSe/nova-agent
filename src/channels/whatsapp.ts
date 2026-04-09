@@ -44,6 +44,7 @@ export class WhatsAppChannel implements Channel {
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private qrAttempts = 0;
+  private pairingGaveUp = false;
   private flushing = false;
   private groupSyncTimerStarted = false;
 
@@ -60,6 +61,10 @@ export class WhatsAppChannel implements Channel {
   }
 
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
+    if (this.pairingGaveUp) {
+      logger.info('WhatsApp pairing gave up — not reconnecting');
+      return;
+    }
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
@@ -116,12 +121,13 @@ export class WhatsAppChannel implements Channel {
         if (IS_RAILWAY) {
           this.qrAttempts += 1;
           if (this.qrAttempts >= 3) {
-            logger.warn('WhatsApp pairing timed out after 3 attempts. Agent stays online — user can retry from chat.');
+            this.pairingGaveUp = true;
+            logger.warn('WhatsApp pairing gave up after 3 attempts. Agent stays online.');
             import('../notifications.js').then(({ pushNotification }) => {
               pushNotification('error',
-                'WhatsApp pairing timed out after 3 attempts. Say \'connect WhatsApp\' when you\'re ready to try again.');
+                'WhatsApp pairing timed out after 3 attempts. Say "connect WhatsApp" when you are ready to try again.');
             }).catch(() => {});
-            this.sock?.end(undefined);
+            try { this.sock?.end(undefined); } catch {}
             return;
           }
           logger.info(
