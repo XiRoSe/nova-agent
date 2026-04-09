@@ -813,7 +813,10 @@ async function main(): Promise<void> {
     registerGroup(PLATFORM_JID, {
       name: 'Nova Platform',
       folder: 'platform',
+      trigger: `@${ASSISTANT_NAME}`,
+      added_at: new Date().toISOString(),
       isMain: true,
+      requiresTrigger: false,
     });
     logger.info('Registered platform group for HTTP API');
   }
@@ -848,8 +851,10 @@ async function main(): Promise<void> {
           // Store the message as if it came from a channel
           const now = new Date().toISOString();
           storeMessage({
-            chatJid: PLATFORM_JID,
+            id: `platform-${Date.now()}`,
+            chat_jid: PLATFORM_JID,
             sender: 'platform-user',
+            sender_name: 'User',
             content: message,
             timestamp: now,
             is_from_me: false,
