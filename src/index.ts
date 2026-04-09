@@ -662,6 +662,9 @@ async function main(): Promise<void> {
   const platformChannel: Channel = {
     name: 'platform',
     connect: async () => {},
+    disconnect: async () => {},
+    isConnected: () => true,
+    ownsJid: (jid: string) => jid.startsWith('platform:'),
     sendMessage: async (jid: string, text: string) => {
       // Store bot messages so the HTTP API can retrieve them
       storeMessage({
@@ -675,7 +678,6 @@ async function main(): Promise<void> {
         is_bot_message: true,
       });
     },
-    ownsChatJid: (jid: string) => jid.startsWith('platform:'),
   };
   channels.push(platformChannel);
 
