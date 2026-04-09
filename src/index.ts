@@ -643,6 +643,23 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
+  // Start HTTP server EARLY so the agent is always reachable, even during channel auth
+  const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
+  const earlyHttpServer = http.createServer((req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME, starting: true }));
+      return;
+    }
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Agent is starting up, please wait...' }));
+  });
+  earlyHttpServer.listen(PLATFORM_PORT, () => {
+    logger.info({ port: PLATFORM_PORT }, 'Early HTTP server ready (agent starting)');
+  });
+
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
@@ -833,10 +850,9 @@ async function main(): Promise<void> {
   });
 
   // ── Nova Platform HTTP API ──────────────────────────────────────
-  // Provides a REST endpoint so the Nova platform can send messages
-  // and receive responses without requiring a messaging channel.
+  // Replace the early HTTP server with the full one (chat + notifications)
+  earlyHttpServer.close();
   const PLATFORM_JID = 'platform:nova';
-  const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
 
   // Register a "platform" group if not already registered
   if (!registeredGroups[PLATFORM_JID]) {
