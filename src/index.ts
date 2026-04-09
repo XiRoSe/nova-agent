@@ -901,28 +901,29 @@ async function main(): Promise<void> {
             return;
           }
 
-          // Wait for the agent to respond via the platform channel callback
-          const responsePromise = new Promise<string>((resolve) => {
-            const timeout = setTimeout(() => {
-              // Remove callback if timed out
-              const idx = platformResponseCallbacks.indexOf(resolve);
-              if (idx >= 0) platformResponseCallbacks.splice(idx, 1);
-              resolve('Agent is still processing. Try again shortly.');
-            }, 120000); // 2 min timeout
-
-            platformResponseCallbacks.push((text: string) => {
-              clearTimeout(timeout);
-              resolve(text);
-            });
-          });
-
-          // Enqueue the message for processing
+          // Process messages synchronously — wait for the agent to complete
           queue.enqueueMessageCheck(PLATFORM_JID);
 
-          const responseText = await responsePromise;
+          // Poll for bot responses stored by the platform channel
+          const maxWait = 120000;
+          const start = Date.now();
+          let responseText = '';
+
+          while (Date.now() - start < maxWait) {
+            await new Promise((r) => setTimeout(r, 500));
+            // Check for bot messages NEWER than our message
+            const botMsgs = getMessagesSince(PLATFORM_JID, now, ASSISTANT_NAME)
+              .filter((m) => m.is_from_me || m.is_bot_message);
+            if (botMsgs.length > 0) {
+              responseText = botMsgs.map((m) => m.content).join('\n');
+              break;
+            }
+          }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ response: responseText }));
+          res.end(JSON.stringify({
+            response: responseText || 'Agent is still processing. Try again shortly.',
+          }));
         } catch (err) {
           logger.error({ err }, 'Platform API chat error');
           res.writeHead(500, { 'Content-Type': 'application/json' });
