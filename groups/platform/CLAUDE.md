@@ -89,7 +89,35 @@ curl -s -X POST https://backboard.railway.com/graphql/v2 \
 | Slack | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
 | Gmail | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` |
 
-Always walk the user through getting credentials step by step. Confirm before redeploying (causes brief disconnection).
+Walk the user through getting credentials step by step. Confirm before redeploying (causes brief disconnection).
+
+### After redeploying yourself (IMPORTANT):
+When the user reconnects after a redeploy, ALWAYS:
+1. Check your own Railway deployment logs for any setup codes/credentials needed:
+```bash
+DEPLOY_ID=$(curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query { deployments(input: { projectId: \"'$NOVA_RAILWAY_PROJECT_ID'\", serviceId: \"'$NOVA_RAILWAY_SERVICE_ID'\" }, first: 1) { edges { node { id } } } }"}' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4) && \
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query { deploymentLogs(deploymentId: \"'$DEPLOY_ID'\", limit: 50) { message } }"}' 2>&1
+```
+2. Look for:
+   - **WhatsApp**: pairing code or QR code in the logs — show it to the user so they can link their phone
+   - **Telegram**: bot started confirmation
+   - **Discord**: bot connected confirmation
+   - **Slack**: Socket Mode connected confirmation
+   - **Gmail**: auth URL if OAuth is needed
+3. Present the relevant info to the user clearly — they should NEVER need to check Railway dashboard themselves
+
+### WhatsApp specific flow:
+After setting WHATSAPP_PHONE and redeploying:
+- NanoClaw will start the WhatsApp adapter with the phone number
+- A **pairing code** will appear in the deploy logs (format: XXXX-XXXX)
+- Show this code to the user: "Open WhatsApp → Settings → Linked Devices → Link a Device → enter code: XXXX-XXXX"
+- If no pairing code appears, check logs for errors and report to user
 
 ## Self-Evolution
 
