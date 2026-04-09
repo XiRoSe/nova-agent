@@ -643,21 +643,39 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Start HTTP server EARLY so the agent is always reachable, even during channel auth
+  // Start HTTP server EARLY so the agent is always reachable, even during channel auth.
+  // This serves health, notifications (pairing codes!), and a "starting" message for chat.
   const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
+  const { pushNotification: earlyPush, getAndClearNotifications: earlyGetClear, getNotifications: earlyGet } = await import('./notifications.js');
   const earlyHttpServer = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     if (req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME, starting: true }));
+      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME, starting: true, notifications: earlyGet() }));
+      return;
+    }
+    if (req.url === '/api/notifications') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ notifications: earlyGetClear() }));
+      return;
+    }
+    if (req.url === '/api/chat' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const notifs = earlyGet();
+      const msg = notifs.length > 0
+        ? notifs.map(n => n.message).join('\n\n')
+        : 'Agent is starting up — channels are connecting. I\\'ll be ready shortly.';
+      res.end(JSON.stringify({ response: msg }));
       return;
     }
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Agent is starting up, please wait...' }));
   });
   earlyHttpServer.listen(PLATFORM_PORT, () => {
-    logger.info({ port: PLATFORM_PORT }, 'Early HTTP server ready (agent starting)');
+    logger.info({ port: PLATFORM_PORT }, 'Early HTTP server ready (health + notifications)');
   });
 
   // Create and connect all registered channels.
