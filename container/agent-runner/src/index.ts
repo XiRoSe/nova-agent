@@ -193,9 +193,11 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 const DEFAULT_SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
+  // Keep NOVA_* vars available to the agent for self-configuration
+  // Only strip core auth secrets from Bash subprocesses
   const allSecretKeys = [...new Set([
     ...DEFAULT_SECRET_ENV_VARS,
-    ...extraSecretKeys,
+    ...extraSecretKeys.filter(k => !k.startsWith('NOVA_') && !k.startsWith('REPLICATE_')),
   ])];
 
   return async (input, _toolUseId, _context) => {
