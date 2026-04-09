@@ -114,17 +114,18 @@ export class WhatsAppChannel implements Channel {
         // On Railway, don't exit — pairing code was already requested above
         // Track QR attempts to avoid infinite reconnect loops
         if (IS_RAILWAY) {
-          this.qrAttempts = (this.qrAttempts || 0) + 1;
-          if (this.qrAttempts > 5) {
-            logger.warn('WhatsApp pairing timed out after 5 attempts. Agent stays online — user can retry from chat.');
+          this.qrAttempts += 1;
+          if (this.qrAttempts >= 3) {
+            logger.warn('WhatsApp pairing timed out after 3 attempts. Agent stays online — user can retry from chat.');
             import('../notifications.js').then(({ pushNotification }) => {
               pushNotification('error',
-                'WhatsApp pairing timed out. Send "connect WhatsApp" to try again.');
+                'WhatsApp pairing timed out after 3 attempts. Say \'connect WhatsApp\' when you\'re ready to try again.');
             }).catch(() => {});
+            this.sock?.end(undefined);
             return;
           }
           logger.info(
-            `QR received (attempt ${this.qrAttempts}/5), waiting for pairing code authentication...`,
+            `QR received (attempt ${this.qrAttempts}/3), waiting for pairing code authentication...`,
           );
           return;
         }
@@ -152,7 +153,7 @@ export class WhatsAppChannel implements Channel {
           'Connection closed',
         );
 
-        if (shouldReconnect && !(IS_RAILWAY && this.qrAttempts >= 5)) {
+        if (shouldReconnect && !(IS_RAILWAY && this.qrAttempts >= 3)) {
           logger.info('Reconnecting...');
           this.connectInternal().catch((err) => {
             logger.error({ err }, 'Failed to reconnect, retrying in 5s');
@@ -186,6 +187,7 @@ export class WhatsAppChannel implements Channel {
         }
       } else if (connection === 'open') {
         this.connected = true;
+        this.qrAttempts = 0;
         logger.info('Connected to WhatsApp');
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
@@ -454,11 +456,18 @@ registerChannel('whatsapp', (opts: ChannelOpts) => {
   const hasAuthState = fs.existsSync(path.join(authDir, 'creds.json'));
   const hasPhone = !!process.env.WHATSAPP_PHONE;
 
-  // On Railway, skip if there's no existing auth and no phone for pairing.
-  // Locally, QR code auth is interactive so always allow.
-  if (IS_RAILWAY && !hasAuthState && !hasPhone) {
-    logger.warn('WhatsApp: WHATSAPP_PHONE not set and no existing auth state');
-    return null;
+  if (IS_RAILWAY) {
+    // No phone number set — skip WhatsApp entirely
+    if (!hasPhone) {
+      // Clear stale auth state if it exists (prevents reconnection with old creds)
+      if (hasAuthState) {
+        logger.info('WhatsApp: WHATSAPP_PHONE removed — clearing stale auth state');
+        fs.rmSync(authDir, { recursive: true, force: true });
+      } else {
+        logger.warn('WhatsApp: WHATSAPP_PHONE not set — skipping');
+      }
+      return null;
+    }
   }
 
   return new WhatsAppChannel(opts);
