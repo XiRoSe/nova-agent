@@ -810,6 +810,9 @@ async function main(): Promise<void> {
 
   // Register a "platform" group if not already registered
   if (!registeredGroups[PLATFORM_JID]) {
+    // Ensure chat metadata exists in SQLite (required for foreign key on messages)
+    storeChatMetadata(PLATFORM_JID, new Date().toISOString(), 'Nova Platform', 'platform', false);
+
     registerGroup(PLATFORM_JID, {
       name: 'Nova Platform',
       folder: 'platform',
