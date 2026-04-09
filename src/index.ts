@@ -658,6 +658,9 @@ async function main(): Promise<void> {
     channels.push(channel);
     await channel.connect();
   }
+  // Platform response callbacks — resolved when agent sends a message back
+  const platformResponseCallbacks: Array<(text: string) => void> = [];
+
   // Add a virtual platform channel so agent output can be captured via sendMessage
   const platformChannel: Channel = {
     name: 'platform',
@@ -666,7 +669,7 @@ async function main(): Promise<void> {
     isConnected: () => true,
     ownsJid: (jid: string) => jid.startsWith('platform:'),
     sendMessage: async (jid: string, text: string) => {
-      // Store bot messages so the HTTP API can retrieve them
+      // Store bot messages
       storeMessage({
         id: `bot-${Date.now()}`,
         chat_jid: jid,
@@ -677,6 +680,9 @@ async function main(): Promise<void> {
         is_from_me: true,
         is_bot_message: true,
       });
+      // Resolve any waiting HTTP request
+      const cb = platformResponseCallbacks.shift();
+      if (cb) cb(text);
     },
   };
   channels.push(platformChannel);
@@ -895,35 +901,25 @@ async function main(): Promise<void> {
             return;
           }
 
+          // Wait for the agent to respond via the platform channel callback
+          const responsePromise = new Promise<string>((resolve) => {
+            const timeout = setTimeout(() => {
+              // Remove callback if timed out
+              const idx = platformResponseCallbacks.indexOf(resolve);
+              if (idx >= 0) platformResponseCallbacks.splice(idx, 1);
+              resolve('Agent is still processing. Try again shortly.');
+            }, 120000); // 2 min timeout
+
+            platformResponseCallbacks.push((text: string) => {
+              clearTimeout(timeout);
+              resolve(text);
+            });
+          });
+
           // Enqueue the message for processing
           queue.enqueueMessageCheck(PLATFORM_JID);
 
-          // Wait for agent to process and collect output via platformResponses
-          const maxWait = 90000; // 90 seconds
-          const pollInterval = 1000;
-          let waited = 0;
-          let responseText = '';
-
-          while (waited < maxWait) {
-            await new Promise((r) => setTimeout(r, pollInterval));
-            waited += pollInterval;
-
-            // Check for new bot messages after our timestamp
-            const agentMessages = getMessagesSince(
-              PLATFORM_JID,
-              now,
-              ASSISTANT_NAME,
-            ).filter((m) => m.is_from_me || m.is_bot_message);
-
-            if (agentMessages.length > 0) {
-              responseText = agentMessages.map((m) => m.content).join('\n');
-              break;
-            }
-          }
-
-          if (!responseText) {
-            responseText = 'Agent is still processing. Check back shortly.';
-          }
+          const responseText = await responsePromise;
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ response: responseText }));
