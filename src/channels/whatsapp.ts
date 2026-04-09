@@ -152,7 +152,7 @@ export class WhatsAppChannel implements Channel {
           'Connection closed',
         );
 
-        if (shouldReconnect) {
+        if (shouldReconnect && !(IS_RAILWAY && this.qrAttempts >= 5)) {
           logger.info('Reconnecting...');
           this.connectInternal().catch((err) => {
             logger.error({ err }, 'Failed to reconnect, retrying in 5s');
