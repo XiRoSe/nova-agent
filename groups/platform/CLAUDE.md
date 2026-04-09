@@ -116,8 +116,70 @@ npm install -g <package>  # Global tools
 pip install <package>     # Python tools
 ```
 
-### Modifying your own code
-Your NanoClaw source code is at `/app/`. You can read and understand it, but modifications require a redeploy. For persistent changes, modify the source in the Git repo via the Railway API or suggest changes to the user.
+### Modifying your own code (PERSISTENT)
+Your source code lives at GitHub repo `XiRoSe/nova-agent`. You can clone, modify, commit, and push changes that persist across redeploys.
+
+```bash
+# Clone your own repo
+git clone https://$NOVA_GITHUB_TOKEN@github.com/$NOVA_GITHUB_REPO.git /tmp/self-update
+cd /tmp/self-update
+
+# Make changes (e.g., add a skill, modify behavior)
+# ...edit files...
+
+# Commit and push
+git config user.email "nova-agent@nova.com"
+git config user.name "Nova Agent"
+git add -A && git commit -m "Self-update: <description>"
+git push
+
+# Then redeploy to pick up changes
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceInstanceDeploy(serviceId: \"'$NOVA_RAILWAY_SERVICE_ID'\", environmentId: \"'$NOVA_RAILWAY_ENVIRONMENT_ID'\") }"}'
+```
+
+Available env vars for code modification:
+- `NOVA_GITHUB_TOKEN` — GitHub Personal Access Token
+- `NOVA_GITHUB_REPO` — Your source repo (XiRoSe/nova-agent)
+
+### Deploying new Railway services for the user
+You can create entirely new services on Railway — apps, APIs, databases, workers:
+
+```bash
+# Create a new service
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceCreate(input: { projectId: \"'$NOVA_RAILWAY_PROJECT_ID'\", name: \"my-app\" }) { id name } }"}'
+
+# Connect a GitHub repo to the service
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceConnect(id: \"SERVICE_ID\", input: { repo: \"owner/repo\", branch: \"main\" }) { id } }"}'
+
+# Set env vars on the new service
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { variableCollectionUpsert(input: { projectId: \"'$NOVA_RAILWAY_PROJECT_ID'\", environmentId: \"'$NOVA_RAILWAY_ENVIRONMENT_ID'\", serviceId: \"SERVICE_ID\", variables: { KEY: \"value\" } }) }"}'
+
+# Generate a public domain
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceDomainCreate(input: { serviceId: \"SERVICE_ID\", environmentId: \"'$NOVA_RAILWAY_ENVIRONMENT_ID'\" }) { domain } }"}'
+
+# Add a database
+curl -s -X POST https://backboard.railway.com/graphql/v2 \
+  -H "Authorization: Bearer $NOVA_RAILWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation { serviceCreate(input: { projectId: \"'$NOVA_RAILWAY_PROJECT_ID'\", name: \"postgres\", source: { image: \"postgres:16\" } }) { id } }"}'
+```
+
+You can build full applications: write the code, create a GitHub repo, push it, deploy on Railway, and hand the user a live URL.
 
 ### Learning from interactions
 Store important context about the user and their preferences. Build understanding over time. Reference past conversations naturally.
