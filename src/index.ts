@@ -907,26 +907,31 @@ async function main(): Promise<void> {
     );
     const allChats = getAllChats();
     for (const chat of allChats) {
-      if (!registeredGroups[chat.jid] && chat.is_group && chat.name) {
+      if (!registeredGroups[chat.jid] && chat.name) {
         // Derive channel prefix for folder name (slack, tg, dc, wa)
         let prefix: string;
         if (chat.jid.startsWith('slack:')) prefix = 'slack';
         else if (chat.jid.startsWith('tg:')) prefix = 'tg';
         else if (chat.jid.startsWith('dc:')) prefix = 'dc';
-        else if (chat.jid.includes('@g.us')) prefix = 'wa';
-        else continue; // skip non-group JIDs (gmail, solo chats, etc.)
+        else if (chat.jid.includes('@g.us')) prefix = 'wa-group';
+        else if (chat.jid.includes('@s.whatsapp.net')) prefix = 'wa';
+        else continue; // skip unknown JID formats
 
         const safeName = chat.name
           .replace(/[^a-zA-Z0-9-]/g, '-')
           .toLowerCase()
           .slice(0, 50);
         const folderName = `${prefix}_${safeName}`;
+        // Solo chats (DMs) don't require trigger — respond to everything
+        // Group chats require @mention to avoid noise
+        const isSoloChat = chat.jid.includes('@s.whatsapp.net') ||
+          chat.jid.startsWith('tg:') && !chat.is_group;
         registerGroup(chat.jid, {
           name: chat.name,
           folder: folderName,
           trigger: `@${ASSISTANT_NAME}`,
           added_at: new Date().toISOString(),
-          requiresTrigger: true,
+          requiresTrigger: !isSoloChat,
         });
         logger.info(
           { jid: chat.jid, name: chat.name, folder: folderName },
