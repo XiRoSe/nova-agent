@@ -355,10 +355,27 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { image: Buffer.from(imageBase64, 'base64'), mimetype: mimeType, caption: caption || '' });
+      const sendPromise = this.sock.sendMessage(jid, { image: Buffer.from(imageBase64, 'base64'), mimetype: mimeType, caption: caption || '' });
+      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image send timeout after 30s')), 30000));
+      await Promise.race([sendPromise, timeoutPromise]);
       logger.info({ jid }, 'Image sent');
     } catch (err) {
       logger.warn({ jid, err }, 'Failed to send image');
+    }
+  }
+
+  async sendImageUrl(jid: string, imageUrl: string, caption?: string): Promise<void> {
+    if (!this.connected) {
+      logger.warn({ jid }, 'WA disconnected, image URL not sent');
+      return;
+    }
+    try {
+      const sendPromise = this.sock.sendMessage(jid, { image: { url: imageUrl }, caption: caption || '' });
+      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image URL send timeout after 30s')), 30000));
+      await Promise.race([sendPromise, timeoutPromise]);
+      logger.info({ jid }, 'Image URL sent');
+    } catch (err) {
+      logger.warn({ jid, err }, 'Failed to send image URL');
     }
   }
 

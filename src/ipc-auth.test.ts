@@ -54,6 +54,7 @@ beforeEach(() => {
   deps = {
     sendMessage: async () => {},
     sendImage: async () => {},
+    sendImageUrl: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;
