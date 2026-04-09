@@ -697,6 +697,20 @@ async function main(): Promise<void> {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+    // Retry WhatsApp pairing without redeploying
+    if (req.url === '/api/retry-whatsapp' && req.method === 'POST') {
+      const waChannel = channels.find(ch => ch.name === 'whatsapp');
+      if (waChannel && 'retryPairing' in waChannel) {
+        (waChannel as any).retryPairing();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'retrying', message: 'WhatsApp pairing restarted. Code will appear in notifications.' }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'WhatsApp channel not active. Set WHATSAPP_PHONE and redeploy first.' }));
+      }
+      return;
+    }
+
     if (req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({

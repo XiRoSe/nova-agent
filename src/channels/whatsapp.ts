@@ -60,6 +60,17 @@ export class WhatsAppChannel implements Channel {
     });
   }
 
+  /** Reset pairing state and reconnect — called when user says "try WhatsApp again" */
+  async retryPairing(): Promise<void> {
+    this.pairingGaveUp = false;
+    this.qrAttempts = 0;
+    try { this.sock?.end(undefined); } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+    this.connectInternal().catch((err) => {
+      logger.error({ err }, 'WhatsApp retry pairing failed');
+    });
+  }
+
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
     if (this.pairingGaveUp) {
       logger.info('WhatsApp pairing gave up — not reconnecting');

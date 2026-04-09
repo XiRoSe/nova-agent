@@ -89,7 +89,13 @@ curl -s -X POST https://backboard.railway.com/graphql/v2 \
 | Slack | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
 | Gmail | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` |
 
-Walk the user through getting credentials step by step. Confirm before redeploying (causes brief disconnection).
+Walk the user through getting credentials step by step.
+
+### IMPORTANT: When to redeploy vs not
+- **First time setting a channel env var** → set the var via Railway API, then redeploy
+- **WhatsApp pairing code expired/failed** → DON'T redeploy! Call `curl -s -X POST http://localhost:8080/api/retry-whatsapp` instead. This restarts WhatsApp pairing without a full redeploy.
+- **Changing a channel token** → set the new var, then redeploy
+- **General rule**: only redeploy when env vars CHANGE. If they're already set, use internal restart endpoints.
 
 ### After redeploying yourself (IMPORTANT):
 When the user reconnects after a redeploy, ALWAYS:
