@@ -658,8 +658,7 @@ async function main(): Promise<void> {
     await channel.connect();
   }
   if (channels.length === 0) {
-    logger.fatal('No channels connected');
-    process.exit(1);
+    logger.warn('No channels connected yet — agent will wait for channel configuration');
   }
 
   // Auto-register main group (zero-config Railway deploy).
