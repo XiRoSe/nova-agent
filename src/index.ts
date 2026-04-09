@@ -1,4 +1,5 @@
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 
 import {
@@ -799,6 +800,103 @@ async function main(): Promise<void> {
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
+  });
+
+  // ── Nova Platform HTTP API ──────────────────────────────────────
+  // Provides a REST endpoint so the Nova platform can send messages
+  // and receive responses without requiring a messaging channel.
+  const PLATFORM_JID = 'platform:nova';
+  const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
+
+  // Register a "platform" group if not already registered
+  if (!registeredGroups[PLATFORM_JID]) {
+    registerGroup(PLATFORM_JID, {
+      name: 'Nova Platform',
+      folder: 'platform',
+      isMain: true,
+    });
+    logger.info('Registered platform group for HTTP API');
+  }
+
+  const httpServer = http.createServer(async (req, res) => {
+    // CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    // Health check
+    if (req.url === '/health' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME }));
+      return;
+    }
+
+    // Chat endpoint
+    if (req.url === '/api/chat' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { message } = JSON.parse(body);
+          if (!message) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'message field required' }));
+            return;
+          }
+
+          // Store the message as if it came from a channel
+          const now = new Date().toISOString();
+          storeMessage({
+            chatJid: PLATFORM_JID,
+            sender: 'platform-user',
+            content: message,
+            timestamp: now,
+            is_from_me: false,
+            is_bot_message: false,
+          });
+
+          // Collect responses by intercepting the output callback
+          const responses: string[] = [];
+          const group = registeredGroups[PLATFORM_JID];
+          if (!group) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Platform group not registered' }));
+            return;
+          }
+
+          // Process through the agent
+          const result = await processGroupMessages(PLATFORM_JID);
+
+          // Get agent's response from stored messages
+          const agentMessages = getMessagesSince(
+            PLATFORM_JID,
+            now,
+            ASSISTANT_NAME,
+          ).filter((m) => m.is_from_me || m.is_bot_message);
+
+          const responseText = agentMessages
+            .map((m) => m.content)
+            .join('\n')
+            || 'Agent processed the message but produced no text response.';
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ response: responseText, status: result }));
+        } catch (err) {
+          logger.error({ err }, 'Platform API chat error');
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal error' }));
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  });
+
+  httpServer.listen(PLATFORM_PORT, () => {
+    logger.info({ port: PLATFORM_PORT }, 'Nova Platform HTTP API ready');
   });
 }
 
