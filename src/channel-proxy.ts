@@ -30,8 +30,10 @@ const WORKER_SCRIPT = path.join(__dirname, 'channel-worker.js');
 /** How long to wait before attempting to respawn a crashed worker (ms). */
 const RESPAWN_DELAY_MS = 5000;
 
-/** Timeout for connect / disconnect operations (ms). */
-const LIFECYCLE_TIMEOUT_MS = 30_000;
+/** Timeout for connect / disconnect operations (ms).
+ * WhatsApp pairing can take 60-120s, so we use a generous timeout.
+ * The HTTP server is on the main thread and stays responsive regardless. */
+const LIFECYCLE_TIMEOUT_MS = 180_000;
 
 /** Timeout for sendMessage / syncGroups request-response pairs (ms). */
 const REQUEST_TIMEOUT_MS = 60_000;
