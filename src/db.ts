@@ -284,6 +284,13 @@ export function storeMessage(msg: NewMessage): void {
 }
 
 /**
+ * Delete all messages for a chat JID.
+ */
+export function clearMessages(chatJid: string): void {
+  db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
+}
+
+/**
  * Store a message directly.
  */
 export function storeMessageDirect(msg: {

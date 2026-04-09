@@ -45,6 +45,7 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  clearMessages,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -879,6 +880,10 @@ async function main(): Promise<void> {
             res.end(JSON.stringify({ error: 'message field required' }));
             return;
           }
+
+          // Clear old platform messages to avoid queue buildup
+          clearMessages(PLATFORM_JID);
+          platformResponses.length = 0;
 
           // Store the message as if it came from a channel
           const now = new Date().toISOString();
