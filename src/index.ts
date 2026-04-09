@@ -667,7 +667,7 @@ async function main(): Promise<void> {
       const notifs = earlyGet();
       const msg = notifs.length > 0
         ? notifs.map(n => n.message).join('\n\n')
-        : 'Agent is starting up — channels are connecting. I\\'ll be ready shortly.';
+        : 'Agent is starting up — channels are connecting. Will be ready shortly.';
       res.end(JSON.stringify({ response: msg }));
       return;
     }
