@@ -964,6 +964,15 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
+    sendImage: (jid, imageBase64, mimeType, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (typeof (channel as { sendImage?: unknown }).sendImage === 'function') {
+        return (channel as unknown as { sendImage: (jid: string, imageBase64: string, mimeType: string, caption?: string) => Promise<void> }).sendImage(jid, imageBase64, mimeType, caption);
+      }
+      logger.warn({ jid }, 'Channel does not support sendImage');
+      return Promise.resolve();
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

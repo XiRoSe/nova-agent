@@ -51,7 +51,8 @@ export type MainToWorkerMessage =
   | { type: 'set-typing'; jid: string; isTyping: boolean }
   | { type: 'sync-groups'; force: boolean; id: string }
   | { type: 'update-registered-groups'; groups: Record<string, RegisteredGroupData> }
-  | { type: 'retry-pairing' };
+  | { type: 'retry-pairing' }
+  | { type: 'send-image'; id: string; jid: string; imageBase64: string; mimeType: string; caption?: string };
 
 // ---------------------------------------------------------------------------
 // Worker -> Main thread messages
@@ -77,4 +78,5 @@ export type WorkerToMainMessage =
       notificationType: 'info' | 'action' | 'error';
       message: string;
     }
-  | { type: 'log'; level: string; msg: string; data?: Record<string, unknown> };
+  | { type: 'log'; level: string; msg: string; data?: Record<string, unknown> }
+  | { type: 'send-image-result'; id: string; success: boolean; error?: string };

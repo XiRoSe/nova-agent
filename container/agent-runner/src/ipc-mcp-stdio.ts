@@ -65,6 +65,43 @@ server.tool(
 );
 
 server.tool(
+  'send_image',
+  "Send an image file to the user or group immediately while you're still running. Use this to share images, charts, or other visual content.",
+  {
+    image_path: z.string().describe('Local file path to the image to send'),
+    caption: z.string().optional().describe('Optional caption for the image'),
+    target_jid: z.string().optional().describe('(Main group only) Send to a different channel by JID. Defaults to the current group.'),
+  },
+  async (args) => {
+    const targetJid = isMain && args.target_jid ? args.target_jid : chatJid;
+
+    const ext = path.extname(args.image_path).toLowerCase();
+    const mimeType =
+      ext === '.png' ? 'image/png' :
+      ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+      ext === '.gif' ? 'image/gif' :
+      ext === '.webp' ? 'image/webp' :
+      'image/jpeg';
+
+    const imageBase64 = fs.readFileSync(args.image_path).toString('base64');
+
+    const data = {
+      type: 'image',
+      chatJid: targetJid,
+      imageBase64,
+      mimeType,
+      caption: args.caption,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Image sent.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
