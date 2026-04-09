@@ -125,6 +125,13 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
+  // Broadcast to worker threads
+  for (const ch of channels) {
+    if ('updateRegisteredGroups' in ch) {
+      (ch as any).updateRegisteredGroups(registeredGroups);
+    }
+  }
+
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',
@@ -800,21 +807,34 @@ async function main(): Promise<void> {
     logger.info({ port: PLATFORM_PORT }, 'Nova HTTP API ready');
   });
 
-  // ── CHANNEL CONNECTIONS (non-blocking, in background) ──
+  // ── CHANNEL CONNECTIONS (each in its own Worker Thread) ──
+  const { ChannelProxy } = await import('./channel-proxy.js');
+
   for (const channelName of getRegisteredChannelNames()) {
+    // Check if channel has credentials before spawning a worker
     const factory = getChannelFactory(channelName)!;
-    const channel = factory(channelOpts);
-    if (!channel) {
+    const testChannel = factory(channelOpts);
+    if (!testChannel) {
       logger.warn({ channel: channelName }, 'Channel credentials missing — skipping.');
       continue;
     }
-    channels.push(channel);
-    // Connect in background — don't block startup
-    channel.connect().then(() => {
-      logger.info({ channel: channelName }, 'Channel connected');
+    // Don't keep the test channel — we'll create it inside the worker
+    if (testChannel.disconnect) testChannel.disconnect().catch(() => {});
+
+    const proxy = new ChannelProxy(
+      channelName,
+      channelOpts.onMessage,
+      channelOpts.onChatMetadata,
+      registeredGroups,
+    );
+    channels.push(proxy);
+
+    // Connect in background via worker thread — never blocks main thread
+    proxy.connect().then(() => {
+      logger.info({ channel: channelName }, 'Channel worker connected');
       pushNotification('info', `${channelName} connected`);
-    }).catch((err) => {
-      logger.error({ channel: channelName, err }, 'Channel connection failed');
+    }).catch((err: Error) => {
+      logger.error({ channel: channelName, err }, 'Channel worker connection failed');
       pushNotification('error', `${channelName} connection failed: ${err.message || 'unknown error'}`);
     });
   }
