@@ -854,6 +854,14 @@ async function main(): Promise<void> {
     logger.info('Registered platform group for HTTP API');
   }
 
+  // Proactive notification system
+  const { pushNotification, getAndClearNotifications, getNotifications } = await import('./notifications.js');
+
+  const connectedChannels = channels.filter(ch => ch.name !== 'platform').map(ch => ch.name);
+  if (connectedChannels.length > 0) {
+    pushNotification('info', `Connected channels: ${connectedChannels.join(', ')}`);
+  }
+
   const httpServer = http.createServer(async (req, res) => {
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -864,7 +872,19 @@ async function main(): Promise<void> {
     // Health check
     if (req.url === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME }));
+      res.end(JSON.stringify({
+        status: 'ok',
+        agent: ASSISTANT_NAME,
+        channels: connectedChannels,
+        notifications: getNotifications(),
+      }));
+      return;
+    }
+
+    // Notifications endpoint — returns and clears pending notifications
+    if (req.url === '/api/notifications' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ notifications: getAndClearNotifications() }));
       return;
     }
 

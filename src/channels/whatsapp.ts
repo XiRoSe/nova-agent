@@ -94,6 +94,12 @@ export class WhatsAppChannel implements Channel {
             { code },
             `WhatsApp pairing code: ${code} — enter this in WhatsApp > Linked Devices > Link with phone number`,
           );
+          // Push to Nova notification system so the platform chat shows it
+          import('../notifications.js').then(({ pushNotification }) => {
+            pushNotification('action',
+              `WhatsApp pairing code: **${code}**\n\nOpen WhatsApp → Settings → Linked Devices → Link with phone number → Enter code: ${code}`);
+          }).catch(() => {});
+
         } catch (err) {
           logger.error({ err }, 'Failed to request pairing code');
         }
