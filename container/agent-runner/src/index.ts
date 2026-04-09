@@ -542,8 +542,9 @@ async function main(): Promise<void> {
   // On Railway (no credential proxy), inject secrets from stdin into the environment
   // so the Claude SDK can authenticate directly.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  if (containerInput.secrets) {
-    for (const [key, value] of Object.entries(containerInput.secrets)) {
+  const secrets = (containerInput as any).secrets as Record<string, string> | undefined;
+  if (secrets) {
+    for (const [key, value] of Object.entries(secrets)) {
       sdkEnv[key] = value;
     }
   }
