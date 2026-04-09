@@ -43,6 +43,7 @@ export class WhatsAppChannel implements Channel {
   private connected = false;
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
+  private qrAttempts = 0;
   private flushing = false;
   private groupSyncTimerStarted = false;
 
@@ -111,9 +112,19 @@ export class WhatsAppChannel implements Channel {
 
       if (qr) {
         // On Railway, don't exit — pairing code was already requested above
+        // Track QR attempts to avoid infinite reconnect loops
         if (IS_RAILWAY) {
+          this.qrAttempts = (this.qrAttempts || 0) + 1;
+          if (this.qrAttempts > 5) {
+            logger.warn('WhatsApp pairing timed out after 5 attempts. Agent stays online — user can retry from chat.');
+            import('../notifications.js').then(({ pushNotification }) => {
+              pushNotification('error',
+                'WhatsApp pairing timed out. Send "connect WhatsApp" to try again.');
+            }).catch(() => {});
+            return;
+          }
           logger.info(
-            'QR received, waiting for pairing code authentication...',
+            `QR received (attempt ${this.qrAttempts}/5), waiting for pairing code authentication...`,
           );
           return;
         }
