@@ -171,6 +171,15 @@ export async function runRailwayAgent(
         LOG_LEVEL: process.env.LOG_LEVEL || '',
         NODE_ENV: process.env.NODE_ENV || '',
         RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT || '',
+        // Nova self-configuration: pass through NOVA_* env vars directly
+        // so the agent can use them in Bash commands
+        ...(Object.fromEntries(
+          Object.entries(process.env)
+            .filter(([k]) => k.startsWith('NOVA_'))
+            .map(([k, v]) => [k, v || ''])
+        )),
+        // Also pass REPLICATE_API_TOKEN for Replicate skill
+        REPLICATE_API_TOKEN: process.env.REPLICATE_API_TOKEN || '',
       },
     });
 
