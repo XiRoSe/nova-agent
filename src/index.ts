@@ -643,61 +643,15 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Start HTTP server EARLY so the agent is always reachable, even during channel auth.
-  // This serves health, notifications (pairing codes!), and a "starting" message for chat.
-  const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
-  const { pushNotification: earlyPush, getAndClearNotifications: earlyGetClear, getNotifications: earlyGet } = await import('./notifications.js');
-  const earlyHttpServer = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-    if (req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', agent: ASSISTANT_NAME, starting: true, notifications: earlyGet() }));
-      return;
-    }
-    if (req.url === '/api/notifications') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ notifications: earlyGetClear() }));
-      return;
-    }
-    if (req.url === '/api/chat' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      const notifs = earlyGet();
-      const msg = notifs.length > 0
-        ? notifs.map(n => n.message).join('\n\n')
-        : 'Agent is starting up — channels are connecting. Will be ready shortly.';
-      res.end(JSON.stringify({ response: msg }));
-      return;
-    }
-    res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Agent is starting up, please wait...' }));
-  });
-  earlyHttpServer.listen(PLATFORM_PORT, () => {
-    logger.info({ port: PLATFORM_PORT }, 'Early HTTP server ready (health + notifications)');
-  });
-
-  // Create and connect all registered channels.
-  // Each channel self-registers via the barrel import above.
-  // Factories return null when credentials are missing, so unconfigured channels are skipped.
-  for (const channelName of getRegisteredChannelNames()) {
-    const factory = getChannelFactory(channelName)!;
-    const channel = factory(channelOpts);
-    if (!channel) {
-      logger.warn(
-        { channel: channelName },
-        'Channel installed but credentials missing — skipping. Set env vars in Railway service config (or .env locally).',
-      );
-      continue;
-    }
-    channels.push(channel);
-    await channel.connect();
-  }
+  // ── Platform setup (BEFORE channel connections) ──────────────────
   // Platform responses — filled by the platform channel's sendMessage
   const platformResponses: string[] = [];
+  const { pushNotification, getAndClearNotifications, getNotifications } = await import('./notifications.js');
+  const PLATFORM_JID = 'platform:nova';
+  const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
+  let agentReady = false;
 
-  // Add a virtual platform channel so agent output can be captured via sendMessage
+  // Platform virtual channel — captures agent output for HTTP API
   const platformChannel: Channel = {
     name: 'platform',
     connect: async () => {},
@@ -722,9 +676,133 @@ async function main(): Promise<void> {
   };
   channels.push(platformChannel);
 
-  if (channels.length <= 1) {
-    // Only the platform channel is connected — no external channels
-    logger.warn('No external channels connected yet — platform API is available');
+  // Register platform group
+  storeChatMetadata(PLATFORM_JID, new Date().toISOString(), 'Nova Platform', 'platform', false);
+  if (!registeredGroups[PLATFORM_JID]) {
+    registerGroup(PLATFORM_JID, {
+      name: 'Nova Platform',
+      folder: 'platform',
+      trigger: `@${ASSISTANT_NAME}`,
+      added_at: new Date().toISOString(),
+      isMain: true,
+      requiresTrigger: false,
+    });
+    logger.info('Registered platform group for HTTP API');
+  }
+
+  // ── HTTP SERVER (starts IMMEDIATELY, before channel connections) ──
+  const httpServer = http.createServer(async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'ok',
+        agent: ASSISTANT_NAME,
+        ready: agentReady,
+        notifications: getNotifications(),
+      }));
+      return;
+    }
+
+    if (req.url === '/api/notifications') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ notifications: getAndClearNotifications() }));
+      return;
+    }
+
+    if (req.url === '/api/chat' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { message } = JSON.parse(body);
+          if (!message) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'message field required' }));
+            return;
+          }
+
+          if (!agentReady) {
+            // Not fully started yet — return any pending notifications
+            const notifs = getNotifications();
+            const msg = notifs.length > 0
+              ? notifs.map((n: { message: string }) => n.message).join('\n\n')
+              : 'Agent is starting up. Will be ready shortly.';
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ response: msg }));
+            return;
+          }
+
+          clearMessages(PLATFORM_JID);
+          platformResponses.length = 0;
+
+          const now = new Date().toISOString();
+          storeMessage({
+            id: `platform-${Date.now()}`,
+            chat_jid: PLATFORM_JID,
+            sender: 'platform-user',
+            sender_name: 'User',
+            content: message,
+            timestamp: now,
+            is_from_me: false,
+            is_bot_message: false,
+          });
+
+          queue.enqueueMessageCheck(PLATFORM_JID);
+
+          const maxWait = 120000;
+          const start = Date.now();
+          let responseText = '';
+          while (Date.now() - start < maxWait) {
+            await new Promise((r) => setTimeout(r, 500));
+            if (platformResponses.length > 0) {
+              responseText = platformResponses.splice(0).join('\n');
+              break;
+            }
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            response: responseText || 'Agent is still processing. Try again shortly.',
+          }));
+        } catch (err) {
+          logger.error({ err }, 'Platform API chat error');
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal error' }));
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  });
+
+  httpServer.listen(PLATFORM_PORT, () => {
+    logger.info({ port: PLATFORM_PORT }, 'Nova HTTP API ready');
+  });
+
+  // ── CHANNEL CONNECTIONS (non-blocking, in background) ──
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn({ channel: channelName }, 'Channel credentials missing — skipping.');
+      continue;
+    }
+    channels.push(channel);
+    // Connect in background — don't block startup
+    channel.connect().then(() => {
+      logger.info({ channel: channelName }, 'Channel connected');
+      pushNotification('info', `${channelName} connected`);
+    }).catch((err) => {
+      logger.error({ channel: channelName, err }, 'Channel connection failed');
+      pushNotification('error', `${channelName} connection failed: ${err.message || 'unknown error'}`);
+    });
   }
 
   // Auto-register main group (zero-config Railway deploy).
@@ -862,140 +940,14 @@ async function main(): Promise<void> {
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
+  agentReady = true;
+  logger.info('Agent ready — chat is fully operational');
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
   });
 
-  // ── Nova Platform HTTP API ──────────────────────────────────────
-  // Replace the early HTTP server with the full one (chat + notifications)
-  earlyHttpServer.close();
-  const PLATFORM_JID = 'platform:nova';
-
-  // Register a "platform" group if not already registered
-  if (!registeredGroups[PLATFORM_JID]) {
-    // Ensure chat metadata exists in SQLite (required for foreign key on messages)
-    storeChatMetadata(PLATFORM_JID, new Date().toISOString(), 'Nova Platform', 'platform', false);
-
-    registerGroup(PLATFORM_JID, {
-      name: 'Nova Platform',
-      folder: 'platform',
-      trigger: `@${ASSISTANT_NAME}`,
-      added_at: new Date().toISOString(),
-      isMain: true,
-      requiresTrigger: false,
-    });
-    logger.info('Registered platform group for HTTP API');
-  }
-
-  // Proactive notification system
-  const { pushNotification, getAndClearNotifications, getNotifications } = await import('./notifications.js');
-
-  const connectedChannels = channels.filter(ch => ch.name !== 'platform').map(ch => ch.name);
-  if (connectedChannels.length > 0) {
-    pushNotification('info', `Connected channels: ${connectedChannels.join(', ')}`);
-  }
-
-  const httpServer = http.createServer(async (req, res) => {
-    // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-
-    // Health check
-    if (req.url === '/health' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'ok',
-        agent: ASSISTANT_NAME,
-        channels: connectedChannels,
-        notifications: getNotifications(),
-      }));
-      return;
-    }
-
-    // Notifications endpoint — returns and clears pending notifications
-    if (req.url === '/api/notifications' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ notifications: getAndClearNotifications() }));
-      return;
-    }
-
-    // Chat endpoint
-    if (req.url === '/api/chat' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', async () => {
-        try {
-          const { message } = JSON.parse(body);
-          if (!message) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'message field required' }));
-            return;
-          }
-
-          // Clear old platform messages to avoid queue buildup
-          clearMessages(PLATFORM_JID);
-          platformResponses.length = 0;
-
-          // Store the message as if it came from a channel
-          const now = new Date().toISOString();
-          storeMessage({
-            id: `platform-${Date.now()}`,
-            chat_jid: PLATFORM_JID,
-            sender: 'platform-user',
-            sender_name: 'User',
-            content: message,
-            timestamp: now,
-            is_from_me: false,
-            is_bot_message: false,
-          });
-
-          const group = registeredGroups[PLATFORM_JID];
-          if (!group) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Platform group not registered' }));
-            return;
-          }
-
-          // Process messages synchronously — wait for the agent to complete
-          queue.enqueueMessageCheck(PLATFORM_JID);
-
-          // Wait for the platform channel's sendMessage to store a bot response
-          const maxWait = 120000;
-          const start = Date.now();
-          let responseText = '';
-
-          while (Date.now() - start < maxWait) {
-            await new Promise((r) => setTimeout(r, 500));
-            // Check platformResponses array (filled by platform channel sendMessage)
-            if (platformResponses.length > 0) {
-              responseText = platformResponses.splice(0).join('\n');
-              break;
-            }
-          }
-
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            response: responseText || 'Agent is still processing. Try again shortly.',
-          }));
-        } catch (err) {
-          logger.error({ err }, 'Platform API chat error');
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Internal error' }));
-        }
-      });
-      return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
-  });
-
-  httpServer.listen(PLATFORM_PORT, () => {
-    logger.info({ port: PLATFORM_PORT }, 'Nova Platform HTTP API ready');
-  });
+  // HTTP API is already running from the start of main() — nothing more to do here
 }
 
 // Guard: only run when executed directly, not when imported by tests
