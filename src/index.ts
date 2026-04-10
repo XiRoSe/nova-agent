@@ -5,10 +5,13 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   IS_RAILWAY,
   POLL_INTERVAL,
   SLACK_MAIN_CHANNEL_ID,
+  STORE_DIR,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
