@@ -667,6 +667,56 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   return result;
 }
 
+// --- History query ---
+
+export interface HistoryMessage {
+  id: string;
+  chat_jid: string;
+  sender: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: number;
+  is_bot_message: number;
+}
+
+/**
+ * Get recent messages across all channels, sorted by timestamp (oldest first).
+ * Optionally filter by a specific chat_jid.
+ */
+export function getAllMessages(
+  limit: number = 100,
+  channelJid?: string,
+): HistoryMessage[] {
+  let sql: string;
+  let params: unknown[];
+
+  if (channelJid) {
+    sql = `
+      SELECT * FROM (
+        SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+        FROM messages
+        WHERE chat_jid = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      ) ORDER BY timestamp
+    `;
+    params = [channelJid, limit];
+  } else {
+    sql = `
+      SELECT * FROM (
+        SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+        FROM messages
+        ORDER BY timestamp DESC
+        LIMIT ?
+      ) ORDER BY timestamp
+    `;
+    params = [limit];
+  }
+
+  return db.prepare(sql).all(...params) as HistoryMessage[];
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

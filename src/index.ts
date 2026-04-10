@@ -31,6 +31,7 @@ import {
 } from './container-runtime.js';
 import {
   getAllChats,
+  getAllMessages,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
@@ -732,6 +733,50 @@ async function main(): Promise<void> {
     if (req.url === '/api/notifications') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ notifications: getAndClearNotifications() }));
+      return;
+    }
+
+    if (req.url?.startsWith('/api/history') && req.method === 'GET') {
+      try {
+        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const limitParam = url.searchParams.get('limit');
+        const channelParam = url.searchParams.get('channel');
+
+        const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 100)) : 100;
+        const channelJid = channelParam && channelParam !== 'all' ? channelParam : undefined;
+
+        const rows = getAllMessages(limit, channelJid);
+
+        // Derive a friendly "channel" label from chat_jid
+        function deriveChannel(chatJid: string): string {
+          if (chatJid.startsWith('platform:')) return 'platform';
+          if (chatJid.startsWith('slack:')) return 'slack';
+          if (chatJid.startsWith('tg:')) return 'telegram';
+          if (chatJid.startsWith('dc:')) return 'discord';
+          if (chatJid.endsWith('@g.us')) return 'whatsapp-group';
+          if (chatJid.endsWith('@s.whatsapp.net')) return 'whatsapp';
+          return 'unknown';
+        }
+
+        const messages = rows.map((row) => ({
+          id: row.id,
+          chat_jid: row.chat_jid,
+          channel: deriveChannel(row.chat_jid),
+          sender: row.sender,
+          sender_name: row.sender_name,
+          content: row.content,
+          timestamp: row.timestamp,
+          is_from_me: !!row.is_from_me,
+          is_bot_message: !!row.is_bot_message,
+        }));
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ messages, count: messages.length }));
+      } catch (err) {
+        logger.error({ err }, 'History API error');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal error' }));
+      }
       return;
     }
 
