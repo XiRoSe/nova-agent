@@ -166,6 +166,7 @@ port.on('message', async (msg: MainToWorkerMessage) => {
 
     case 'send-image': {
       try {
+        if (!channel!.sendImage) throw new Error('sendImage not supported by this channel');
         await channel!.sendImage(msg.jid, msg.imageBase64, msg.mimeType, msg.caption);
         postToMain({ type: 'send-image-result', id: msg.id, success: true });
       } catch (err) {
