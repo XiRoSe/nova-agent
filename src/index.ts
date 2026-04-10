@@ -845,7 +845,7 @@ async function main(): Promise<void> {
             return;
           }
 
-          clearMessages(PLATFORM_JID);
+          // Only clear the response buffer, NOT the message history
           platformResponses.length = 0;
 
           const now = new Date().toISOString();
