@@ -261,6 +261,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
         await channel.sendMessage(chatJid, text);
+        // Store bot response in SQLite so it appears in cross-channel history.
+        // The platform channel already stores via its own sendMessage; skip
+        // to avoid duplicates.
+        if (!chatJid.startsWith('platform:')) {
+          storeMessage({
+            id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            chat_jid: chatJid,
+            sender: ASSISTANT_NAME,
+            sender_name: ASSISTANT_NAME,
+            content: text,
+            timestamp: new Date().toISOString(),
+            is_from_me: true,
+            is_bot_message: true,
+          });
+        }
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -758,11 +773,18 @@ async function main(): Promise<void> {
     }
 
     if (req.url === '/health') {
+      // Build connected channels list for Settings page
+      const connectedChannels: string[] = [];
+      for (const ch of channels) {
+        if (ch.name === 'platform') continue; // skip virtual channel
+        if (ch.isConnected?.()) connectedChannels.push(ch.name);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: 'ok',
         agent: ASSISTANT_NAME,
         ready: agentReady,
+        channels: connectedChannels,
         notifications: getNotifications(),
       }));
       return;
