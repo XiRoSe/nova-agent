@@ -650,7 +650,42 @@ async function main(): Promise<void> {
       name?: string,
       channel?: string,
       isGroup?: boolean,
-    ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    ) => {
+      storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
+
+      // Auto-register new chats on the fly (not just at startup).
+      // This ensures DMs from Telegram, WhatsApp, etc. are picked up
+      // even if the channel connected after the startup auto-register ran.
+      if (!registeredGroups[chatJid] && name) {
+        let prefix: string | undefined;
+        if (chatJid.startsWith('slack:')) prefix = 'slack';
+        else if (chatJid.startsWith('tg:')) prefix = 'tg';
+        else if (chatJid.startsWith('dc:')) prefix = 'dc';
+        else if (chatJid.includes('@g.us')) prefix = 'wa-group';
+        else if (chatJid.includes('@s.whatsapp.net')) prefix = 'wa';
+
+        if (prefix) {
+          const safeName = name
+            .replace(/[^a-zA-Z0-9-]/g, '-')
+            .toLowerCase()
+            .slice(0, 50);
+          const folderName = `${prefix}_${safeName}`;
+          const isSoloChat = chatJid.includes('@s.whatsapp.net') ||
+            (chatJid.startsWith('tg:') && !isGroup);
+          registerGroup(chatJid, {
+            name,
+            folder: folderName,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: !isSoloChat,
+          });
+          logger.info(
+            { jid: chatJid, name, folder: folderName, solo: isSoloChat },
+            'Auto-registered chat on metadata event',
+          );
+        }
+      }
+    },
     registeredGroups: () => registeredGroups,
   };
 
@@ -1012,7 +1047,7 @@ async function main(): Promise<void> {
         // Solo chats (DMs) don't require trigger — respond to everything
         // Group chats require @mention to avoid noise
         const isSoloChat = chat.jid.includes('@s.whatsapp.net') ||
-          chat.jid.startsWith('tg:') && !chat.is_group;
+          (chat.jid.startsWith('tg:') && !chat.is_group);
         registerGroup(chat.jid, {
           name: chat.name,
           folder: folderName,
