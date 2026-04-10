@@ -717,6 +717,24 @@ export function getAllMessages(
   return db.prepare(sql).all(...params) as HistoryMessage[];
 }
 
+/**
+ * Get messages newer than a given ISO timestamp, across all channels.
+ * Used by the /api/live-messages endpoint for real-time push to web chat.
+ */
+export function getMessagesSinceTimestamp(
+  sinceTimestamp: string,
+  limit: number = 50,
+): HistoryMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+    FROM messages
+    WHERE timestamp > ?
+    ORDER BY timestamp ASC
+    LIMIT ?
+  `;
+  return db.prepare(sql).all(sinceTimestamp, limit) as HistoryMessage[];
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

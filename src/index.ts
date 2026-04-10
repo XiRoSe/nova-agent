@@ -50,6 +50,7 @@ import {
   storeChatMetadata,
   storeMessage,
   clearMessages,
+  getMessagesSinceTimestamp,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -834,6 +835,45 @@ async function main(): Promise<void> {
         res.end(JSON.stringify({ messages, count: messages.length }));
       } catch (err) {
         logger.error({ err }, 'History API error');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal error' }));
+      }
+      return;
+    }
+
+    // Live message stream — returns messages newer than ?since=<ISO timestamp>
+    if (req.url?.startsWith('/api/live-messages') && req.method === 'GET') {
+      try {
+        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const since = url.searchParams.get('since') || new Date(0).toISOString();
+
+        function deriveChannel(chatJid: string): string {
+          if (chatJid.startsWith('platform:')) return 'platform';
+          if (chatJid.startsWith('slack:')) return 'slack';
+          if (chatJid.startsWith('tg:')) return 'telegram';
+          if (chatJid.startsWith('dc:')) return 'discord';
+          if (chatJid.endsWith('@g.us')) return 'whatsapp-group';
+          if (chatJid.endsWith('@s.whatsapp.net')) return 'whatsapp';
+          return 'unknown';
+        }
+
+        const rows = getMessagesSinceTimestamp(since, 50);
+        const messages = rows.map((row) => ({
+          id: row.id,
+          chat_jid: row.chat_jid,
+          channel: deriveChannel(row.chat_jid),
+          sender: row.sender,
+          sender_name: row.sender_name,
+          content: row.content,
+          timestamp: row.timestamp,
+          is_from_me: !!row.is_from_me,
+          is_bot_message: !!row.is_bot_message,
+        }));
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ messages }));
+      } catch (err) {
+        logger.error({ err }, 'Live messages API error');
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Internal error' }));
       }
