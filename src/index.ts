@@ -780,6 +780,45 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Serve media files (screenshots, images) from agent workspace
+    if (req.url?.startsWith('/api/media/') && req.method === 'GET') {
+      const filename = decodeURIComponent(req.url.slice('/api/media/'.length));
+      // Security: prevent path traversal
+      if (filename.includes('..') || filename.includes('/')) {
+        res.writeHead(403); res.end(); return;
+      }
+      // Search common media locations
+      const searchPaths = [
+        path.join(STORE_DIR, 'media', filename),
+        path.join(DATA_DIR, 'media', filename),
+        path.join(GROUPS_DIR, 'platform', 'logs', filename),
+      ];
+      // Also search all group folders
+      if (fs.existsSync(GROUPS_DIR)) {
+        for (const dir of fs.readdirSync(GROUPS_DIR)) {
+          searchPaths.push(path.join(GROUPS_DIR, dir, 'logs', filename));
+          searchPaths.push(path.join(GROUPS_DIR, dir, filename));
+        }
+      }
+      for (const filePath of searchPaths) {
+        if (fs.existsSync(filePath)) {
+          const ext = path.extname(filePath).toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          };
+          res.writeHead(200, {
+            'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+            'Cache-Control': 'public, max-age=86400',
+          });
+          fs.createReadStream(filePath).pipe(res);
+          return;
+        }
+      }
+      res.writeHead(404); res.end();
+      return;
+    }
+
     if (req.url === '/api/chat' && req.method === 'POST') {
       let body = '';
       req.on('data', (chunk: string) => { body += chunk; });

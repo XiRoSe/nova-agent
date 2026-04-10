@@ -282,12 +282,17 @@ export class WhatsAppChannel implements Channel {
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
         if (groups[chatJid]) {
-          const content =
+          let content =
             normalized.conversation ||
             normalized.extendedTextMessage?.text ||
             normalized.imageMessage?.caption ||
             normalized.videoMessage?.caption ||
             '';
+
+          // Mark image messages so the UI knows there's an attachment
+          if (normalized.imageMessage && !content) {
+            content = '[Image attachment]';
+          }
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
           if (!content) continue;
