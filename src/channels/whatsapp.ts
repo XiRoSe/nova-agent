@@ -6,6 +6,7 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   WASocket,
+  downloadMediaMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
@@ -18,7 +19,7 @@ import {
   IS_RAILWAY,
   STORE_DIR,
 } from '../config.js';
-import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
+import { getLastGroupSync, setLastGroupSync, storeMessage, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -289,9 +290,23 @@ export class WhatsAppChannel implements Channel {
             normalized.videoMessage?.caption ||
             '';
 
-          // Mark image messages so the UI knows there's an attachment
-          if (normalized.imageMessage && !content) {
-            content = '[Image attachment]';
+          // Download and save incoming images
+          if (normalized.imageMessage) {
+            try {
+              const stream = await downloadMediaMessage(msg, 'buffer', {}, {
+                logger: logger as any,
+                reuploadRequest: this.sock.updateMediaMessage,
+              });
+              const imgBuffer = stream as Buffer;
+              const imgId = `recv-${Date.now()}`;
+              const mediaDir = path.join(STORE_DIR, 'media');
+              fs.mkdirSync(mediaDir, { recursive: true });
+              fs.writeFileSync(path.join(mediaDir, `${imgId}.jpg`), imgBuffer);
+              content = `[image:${imgId}.jpg]${content ? ' ' + content : ''}`;
+            } catch (imgErr) {
+              logger.warn({ imgErr }, 'Failed to download incoming WhatsApp image');
+              if (!content) content = '[Image attachment]';
+            }
           }
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
@@ -360,10 +375,28 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      const sendPromise = this.sock.sendMessage(jid, { image: Buffer.from(imageBase64, 'base64'), mimetype: mimeType, caption: caption || '' });
+      const imgBuffer = Buffer.from(imageBase64, 'base64');
+      const sendPromise = this.sock.sendMessage(jid, { image: imgBuffer, mimetype: mimeType, caption: caption || '' });
       const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image send timeout after 30s')), 30000));
       await Promise.race([sendPromise, timeoutPromise]);
-      logger.info({ jid }, 'Image sent');
+      // Save copy for web chat history
+      const imgId = `sent-${Date.now()}`;
+      const ext = mimeType.includes('png') ? '.png' : '.jpg';
+      const mediaDir = path.join(STORE_DIR, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, `${imgId}${ext}`), imgBuffer);
+      // Store message with image reference
+      storeMessage({
+        id: `img-${imgId}`,
+        chat_jid: jid,
+        sender: ASSISTANT_NAME,
+        sender_name: ASSISTANT_NAME,
+        content: `[image:${imgId}${ext}]${caption ? ' ' + caption : ''}`,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        is_bot_message: true,
+      });
+      logger.info({ jid, imgId }, 'Image sent + saved');
     } catch (err) {
       logger.warn({ jid, err }, 'Failed to send image');
     }
@@ -378,6 +411,28 @@ export class WhatsAppChannel implements Channel {
       const sendPromise = this.sock.sendMessage(jid, { image: { url: imageUrl }, caption: caption || '' });
       const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image URL send timeout after 30s')), 30000));
       await Promise.race([sendPromise, timeoutPromise]);
+      // Save copy for web chat history
+      try {
+        const imgId = `sent-${Date.now()}`;
+        const mediaDir = path.join(STORE_DIR, 'media');
+        fs.mkdirSync(mediaDir, { recursive: true });
+        const res = await fetch(imageUrl);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const ext = imageUrl.includes('.png') ? '.png' : '.jpg';
+          fs.writeFileSync(path.join(mediaDir, `${imgId}${ext}`), buf);
+          storeMessage({
+            id: `img-${imgId}`,
+            chat_jid: jid,
+            sender: ASSISTANT_NAME,
+            sender_name: ASSISTANT_NAME,
+            content: `[image:${imgId}${ext}]${caption ? ' ' + caption : ''}`,
+            timestamp: new Date().toISOString(),
+            is_from_me: true,
+            is_bot_message: true,
+          });
+        }
+      } catch {}
       logger.info({ jid }, 'Image URL sent');
     } catch (err) {
       logger.warn({ jid, err }, 'Failed to send image URL');
