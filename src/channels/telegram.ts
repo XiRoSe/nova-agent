@@ -1,6 +1,10 @@
-import { Bot } from 'grammy';
+import fs from 'fs';
+import path from 'path';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { Bot, InputFile } from 'grammy';
+
+import { ASSISTANT_NAME, STORE_DIR, TRIGGER_PATTERN } from '../config.js';
+import { storeMessage } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -179,7 +183,51 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || ctx.from?.id?.toString() || 'Unknown';
+      const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+
+      // Download the largest photo size
+      try {
+        const photos = ctx.message.photo;
+        const largest = photos[photos.length - 1];
+        const file = await ctx.api.getFile(largest.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+        const res = await fetch(fileUrl);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const imgId = `tg-${Date.now()}`;
+          const ext = file.file_path?.endsWith('.png') ? '.png' : '.jpg';
+          const mediaDir = path.join(STORE_DIR, 'media');
+          fs.mkdirSync(mediaDir, { recursive: true });
+          fs.writeFileSync(path.join(mediaDir, `${imgId}${ext}`), buf);
+
+          this.opts.onMessage(chatJid, {
+            id: ctx.message.message_id.toString(),
+            chat_jid: chatJid,
+            sender: ctx.from?.id?.toString() || '',
+            sender_name: senderName,
+            content: `[image:${imgId}${ext}]${caption}`,
+            timestamp,
+            is_from_me: false,
+          });
+          logger.info({ chatJid, imgId }, 'Telegram photo downloaded + stored');
+          return;
+        }
+      } catch (err) {
+        logger.warn({ chatJid, err }, 'Failed to download Telegram photo, using placeholder');
+      }
+      // Fallback to placeholder
+      storeNonText(ctx, '[Photo]');
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
@@ -254,6 +302,95 @@ export class TelegramChannel implements Channel {
       );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendImage(jid: string, imageBase64: string, mimeType: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn({ jid }, 'Telegram bot not initialized, image not sent');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const imgBuffer = Buffer.from(imageBase64, 'base64');
+      const replyTo = this.activeThread.get(numericId);
+      const replyParams = replyTo
+        ? { reply_parameters: { message_id: replyTo } }
+        : {};
+
+      await this.bot.api.sendPhoto(
+        numericId,
+        new InputFile(imgBuffer, 'image.jpg'),
+        { caption: caption || '', ...replyParams },
+      );
+
+      // Save copy for web chat history
+      const imgId = `sent-${Date.now()}`;
+      const ext = mimeType.includes('png') ? '.png' : '.jpg';
+      const mediaDir = path.join(STORE_DIR, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, `${imgId}${ext}`), imgBuffer);
+      storeMessage({
+        id: `img-${imgId}`,
+        chat_jid: jid,
+        sender: ASSISTANT_NAME,
+        sender_name: ASSISTANT_NAME,
+        content: `[image:${imgId}${ext}]${caption ? ' ' + caption : ''}`,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        is_bot_message: true,
+      });
+      logger.info({ jid, imgId }, 'Telegram image sent + saved');
+    } catch (err) {
+      logger.warn({ jid, err }, 'Failed to send Telegram image');
+    }
+  }
+
+  async sendImageUrl(jid: string, imageUrl: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn({ jid }, 'Telegram bot not initialized, image URL not sent');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const replyTo = this.activeThread.get(numericId);
+      const replyParams = replyTo
+        ? { reply_parameters: { message_id: replyTo } }
+        : {};
+
+      // Telegram can accept a URL directly for sendPhoto
+      await this.bot.api.sendPhoto(numericId, imageUrl, {
+        caption: caption || '',
+        ...replyParams,
+      });
+
+      // Save copy for web chat history
+      try {
+        const imgId = `sent-${Date.now()}`;
+        const mediaDir = path.join(STORE_DIR, 'media');
+        fs.mkdirSync(mediaDir, { recursive: true });
+        const res = await fetch(imageUrl);
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const ext = imageUrl.includes('.png') ? '.png' : '.jpg';
+          fs.writeFileSync(path.join(mediaDir, `${imgId}${ext}`), buf);
+          storeMessage({
+            id: `img-${imgId}`,
+            chat_jid: jid,
+            sender: ASSISTANT_NAME,
+            sender_name: ASSISTANT_NAME,
+            content: `[image:${imgId}${ext}]${caption ? ' ' + caption : ''}`,
+            timestamp: new Date().toISOString(),
+            is_from_me: true,
+            is_bot_message: true,
+          });
+        }
+      } catch {
+        // Image saved to Telegram but not to local store — not critical
+      }
+      logger.info({ jid }, 'Telegram image URL sent');
+    } catch (err) {
+      logger.warn({ jid, err }, 'Failed to send Telegram image URL');
     }
   }
 

@@ -182,6 +182,24 @@ port.on('message', async (msg: MainToWorkerMessage) => {
       break;
     }
 
+    case 'send-image-url': {
+      try {
+        if (!(channel as any)!.sendImageUrl) throw new Error('sendImageUrl not supported by this channel');
+        await (channel as any)!.sendImageUrl(msg.jid, msg.imageUrl, msg.caption);
+        postToMain({ type: 'send-image-url-result', id: msg.id, success: true });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.error({ err, jid: msg.jid }, 'sendImageUrl failed');
+        postToMain({
+          type: 'send-image-url-result',
+          id: msg.id,
+          success: false,
+          error,
+        });
+      }
+      break;
+    }
+
     case 'set-typing': {
       if (channel!.setTyping) {
         channel!.setTyping(msg.jid, msg.isTyping).catch((err) => {

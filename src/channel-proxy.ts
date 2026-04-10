@@ -140,6 +140,20 @@ export class ChannelProxy implements Channel {
     });
   }
 
+  async sendImageUrl(jid: string, imageUrl: string, caption?: string): Promise<void> {
+    const id = crypto.randomUUID();
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingReplies.delete(id);
+        reject(new Error(`${this.name} sendImageUrl timed out (id=${id})`));
+      }, REQUEST_TIMEOUT_MS);
+
+      this.pendingReplies.set(id, { resolve: () => { clearTimeout(timer); resolve(); }, reject: (err) => { clearTimeout(timer); reject(err); }, timer });
+      this.postToWorker({ type: 'send-image-url', id, jid, imageUrl, caption });
+    });
+  }
+
   isConnected(): boolean {
     return this._connected;
   }
@@ -375,6 +389,19 @@ export class ChannelProxy implements Channel {
             pending.resolve();
           } else {
             pending.reject(new Error(msg.error ?? 'sendImage failed'));
+          }
+        }
+        break;
+      }
+
+      case 'send-image-url-result': {
+        const pending = this.pendingReplies.get(msg.id);
+        if (pending) {
+          this.pendingReplies.delete(msg.id);
+          if (msg.success) {
+            pending.resolve();
+          } else {
+            pending.reject(new Error(msg.error ?? 'sendImageUrl failed'));
           }
         }
         break;
