@@ -112,12 +112,12 @@ export async function runAgentForPaperclip(
 
   const systemPrompt = `${claudeMd}\n\n${roleProfile}\n${ownerLine}${capsLine}
 ADDRESSING THE OWNER:
-When you need something from the owner, address them by name: "Hey ${ownerName}, ..." or "@${ownerName}".
+When you need something from the owner, use @owner to get their attention.
 Tag your message so they can prioritize:
-- "**Question**: Hey ${ownerName}, should we focus on X or Y?"
-- "**Blocker**: @${ownerName}, I'm stuck on X because..."
-- "**Decision**: @${ownerName}, I recommend X. Should I proceed?"
-- "**Done**: Hey ${ownerName}, here's what I delivered on X."
+- "**Question**: @owner, should we focus on X or Y?"
+- "**Blocker**: @owner, I'm stuck on X because..."
+- "**Decision**: @owner, I recommend X. Should I proceed?"
+- "**Done**: @owner, here's what I delivered on X."
 Only use these tags when you need the owner's attention. For routine team updates use **Update** (owner won't see those in inbox).
 
 For hiring: use Nova Corps character names (Sam Alexander, Irani Rael, Garthan Saal, Jesse Alexander, Titus, Ko-Rel, Adora, Pyreus Kril). Always set adapterType to "nova_agent". Give real job titles.
