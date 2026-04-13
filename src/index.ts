@@ -773,6 +773,63 @@ async function main(): Promise<void> {
       return;
     }
 
+    // ── PAPERCLIP MULTI-AGENT ENDPOINTS ──
+
+    // POST /agents/:agentId/run — Paperclip heartbeat triggers this
+    const agentRunMatch = req.url?.match(/^\/agents\/([^/]+)\/run$/);
+    if (agentRunMatch && req.method === 'POST') {
+      const agentId = agentRunMatch[1]!;
+      let body = '';
+      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const request = JSON.parse(body);
+          res.writeHead(200, {
+            'Content-Type': 'application/x-ndjson',
+            'Transfer-Encoding': 'chunked',
+            'Cache-Control': 'no-cache',
+          });
+          const { runAgentForPaperclip } = await import('./paperclip-runner.js');
+          await runAgentForPaperclip(agentId, request, (line: string) => {
+            res.write(line + '\n');
+          });
+          res.end();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ err, agentId }, 'Agent run failed');
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: msg }));
+          } else {
+            res.write(JSON.stringify({ type: 'error', text: msg }) + '\n');
+            res.end();
+          }
+        }
+      });
+      return;
+    }
+
+    // GET /agents/:agentId/files — list agent workspace files
+    const agentFilesMatch = req.url?.match(/^\/agents\/([^/]+)\/files$/);
+    if (agentFilesMatch && req.method === 'GET') {
+      const { listAgentFiles } = await import('./agent-config.js');
+      const files = await listAgentFiles(agentFilesMatch[1]!);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(files));
+      return;
+    }
+
+    // GET /agents/:agentId/files/* — read a specific file
+    const agentFileMatch = req.url?.match(/^\/agents\/([^/]+)\/files\/(.+)$/);
+    if (agentFileMatch && req.method === 'GET') {
+      const { readAgentFile } = await import('./agent-config.js');
+      const content = await readAgentFile(agentFileMatch[1]!, decodeURIComponent(agentFileMatch[2]!));
+      if (content === null) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(content);
+      return;
+    }
+
     if (req.url === '/health') {
       // Build connected channels list for Settings page
       const connectedChannels: string[] = [];
