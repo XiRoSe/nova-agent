@@ -115,7 +115,7 @@ export function buildPaperclipTools(
         url = `${apiUrl}/companies/${companyId}/issues`;
         break;
       case 'get_issue':
-        url = `${apiUrl}/companies/${companyId}/issues/${input.issueId}`;
+        url = `${apiUrl}/issues/${input.issueId}`;
         break;
       case 'update_issue_status':
         url = `${apiUrl}/issues/${input.issueId}`;
