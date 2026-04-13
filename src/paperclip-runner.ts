@@ -104,6 +104,7 @@ export async function runAgentForPaperclip(
     request.paperclipApiUrl,
     request.paperclipAuthToken,
     companyId,
+    request.agentName,
   );
 
   const ownerName = request.ownerName || 'the owner';

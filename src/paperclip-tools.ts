@@ -12,6 +12,7 @@ export function buildPaperclipTools(
   apiUrl: string,
   authToken: string,
   companyId: string,
+  agentName: string = 'Agent',
 ): {
   tools: ToolDef[];
   execute: (
@@ -100,6 +101,30 @@ export function buildPaperclipTools(
         required: ['name', 'role', 'title', 'adapterType'],
       },
     },
+    {
+      name: 'send_message_to_owner',
+      description:
+        'Send a direct message to @owner. Use this when you need their input, are blocked, have a question, or want to report something important. This goes to their inbox — NOT a task comment. Use for: questions, blockers, decisions, progress reports that need attention.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          body: {
+            type: 'string',
+            description:
+              'The message to send. Start with a tag: **Question**: ..., **Blocker**: ..., **Decision**: ..., or **Done**: ...',
+          },
+          tag: {
+            type: 'string',
+            description: 'Message type: question, blocker, decision, done',
+          },
+          relatedIssueIdentifier: {
+            type: 'string',
+            description: 'Optional task reference like UPS-1 if the message relates to a specific task',
+          },
+        },
+        required: ['body'],
+      },
+    },
   ];
 
   async function execute(
@@ -157,6 +182,19 @@ export function buildPaperclipTools(
               maxConcurrentRuns: 1,
             },
           },
+        });
+        break;
+      case 'send_message_to_owner':
+        url = `${apiUrl}/companies/${companyId}/messages`;
+        method = 'POST';
+        body = JSON.stringify({
+          senderType: 'agent',
+          senderAgentId: headers.Authorization?.split(' ')[1] ? undefined : undefined,
+          senderName: agentName,
+          body: input.body,
+          tag: input.tag || null,
+          recipientType: 'owner',
+          relatedIssueIdentifier: input.relatedIssueIdentifier || null,
         });
         break;
       default:
