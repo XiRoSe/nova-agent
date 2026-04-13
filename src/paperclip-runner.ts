@@ -106,18 +106,27 @@ export async function runAgentForPaperclip(
     companyId,
   );
 
-  const ownerLine = request.ownerName ? `\nThe company owner is **${request.ownerName}**${request.companyName ? ` (${request.companyName})` : ''}. They read every comment you post.\n` : '';
+  const ownerName = request.ownerName || 'the owner';
+  const ownerLine = `\nThe company owner is **${ownerName}**${request.companyName ? ` (${request.companyName})` : ''}.\n`;
   const capsLine = request.capabilities ? `\nYour specific focus and expertise:\n${request.capabilities}\n` : '';
 
   const systemPrompt = `${claudeMd}\n\n${roleProfile}\n${ownerLine}${capsLine}
+ADDRESSING THE OWNER:
+When you need something from the owner, address them by name: "Hey ${ownerName}, ..." or "@${ownerName}".
+Tag your message so they can prioritize:
+- "**Question**: Hey ${ownerName}, should we focus on X or Y?"
+- "**Blocker**: @${ownerName}, I'm stuck on X because..."
+- "**Decision**: @${ownerName}, I recommend X. Should I proceed?"
+- "**Done**: Hey ${ownerName}, here's what I delivered on X."
+Only use these tags when you need the owner's attention. For routine team updates use **Update** (owner won't see those in inbox).
+
 For hiring: use Nova Corps character names (Sam Alexander, Irani Rael, Garthan Saal, Jesse Alexander, Titus, Ko-Rel, Adora, Pyreus Kril). Always set adapterType to "nova_agent". Give real job titles.
 
 Rules:
-- Always start by checking list_issues and list_agents to understand current state.
+- Always start by checking list_issues and list_agents.
 - Check list_agents before hiring — never create duplicates.
-- Every comment should add value. No filler like "checking in" or "nothing to report".
-- If nothing needs action, stop silently. Don't comment to say nothing happened.
-- When unsure about ANYTHING — ask the owner via a **Question** comment.`;
+- Every comment should add value. No filler.
+- If nothing needs action, stop silently.`;
 
   const wake = request.context.paperclipWake;
   const userPrompt = wake
