@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -119,6 +120,46 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+// Fetch the user's connected GitHub token from the platform and configure git
+// so all github.com HTTPS operations authenticate as that user. Writes to
+// ~/.gitconfig (not env), so it survives the bash secret-stripping hook.
+// No-op when the platform vars are absent or the user hasn't connected GitHub.
+async function configureUserGitAuth(env: Record<string, string | undefined>): Promise<void> {
+  const platformUrl = env.NOVA_PLATFORM_URL;
+  const agentToken = env.NOVA_AGENT_TOKEN;
+  if (!platformUrl || !agentToken) {
+    log('GitHub: NOVA_PLATFORM_URL/NOVA_AGENT_TOKEN not set, skipping git auth');
+    return;
+  }
+  try {
+    const res = await fetch(`${platformUrl}/api/agent/github-token`, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+    });
+    if (!res.ok) {
+      log(`GitHub: token fetch failed (${res.status}), skipping git auth`);
+      return;
+    }
+    const data = (await res.json()) as { token?: string; login?: string; connected?: boolean };
+    if (!data.connected || !data.token) {
+      log('GitHub: user has not connected an account, skipping git auth');
+      return;
+    }
+    const git = (args: string[]) => execFileSync('git', args, { stdio: 'pipe' });
+    git([
+      'config', '--global',
+      `url.https://x-access-token:${data.token}@github.com/.insteadOf`,
+      'https://github.com/',
+    ]);
+    if (data.login) {
+      git(['config', '--global', 'user.name', data.login]);
+      git(['config', '--global', 'user.email', `${data.login}@users.noreply.github.com`]);
+    }
+    log(`GitHub: git authenticated as ${data.login || 'connected user'}`);
+  } catch (err) {
+    log(`GitHub: git auth setup error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
@@ -550,6 +591,9 @@ async function main(): Promise<void> {
       sdkEnv[key] = value;
     }
   }
+
+  // Authenticate git as the user's connected GitHub account (best-effort).
+  await configureUserGitAuth(sdkEnv);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
