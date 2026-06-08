@@ -53,6 +53,7 @@ import {
   getMessagesSinceTimestamp,
   recordUsage,
   getUsageSummary,
+  getRecentUsage,
   upsertSubagent,
   getSubagents,
 } from './db.js';
@@ -910,7 +911,7 @@ async function main(): Promise<void> {
     if (req.url?.startsWith('/api/usage') && req.method === 'GET') {
       try {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(getUsageSummary()));
+        res.end(JSON.stringify({ ...getUsageSummary(), recent: getRecentUsage(40) }));
       } catch (err) {
         logger.error({ err }, 'Usage API error');
         res.writeHead(500, { 'Content-Type': 'application/json' });

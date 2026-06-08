@@ -339,6 +339,17 @@ export function getUsageSummary(): {
   return { today, month, messageCount };
 }
 
+// Recent per-turn cost rows, newest first — for verifying/auditing spend.
+export function getRecentUsage(limit = 30): Array<{
+  channel: string;
+  cost_usd: number;
+  timestamp: string;
+}> {
+  return db
+    .prepare(`SELECT channel, cost_usd, timestamp FROM usage_log ORDER BY id DESC LIMIT ?`)
+    .all(limit) as ReturnType<typeof getRecentUsage>;
+}
+
 // ── Sub-agent / background-task tracking ─────────────────────────────────
 export function upsertSubagent(s: {
   id: string;
