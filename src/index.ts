@@ -51,6 +51,7 @@ import {
   storeMessage,
   clearMessages,
   getMessagesSinceTimestamp,
+  getLastMessages,
   recordUsage,
   getUsageSummary,
   getRecentUsage,
@@ -223,6 +224,30 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     prompt = formatThreadWithContext(threadMsgs, recent);
   } else {
     prompt = formatMessages(missedMessages, TIMEZONE);
+  }
+
+  // ── Sliding context window ────────────────────────────────────────────────
+  // The SDK re-reads the ENTIRE resumed session every turn, so a long thread
+  // makes each turn progressively more expensive. Cap it: after
+  // NOVA_CONTEXT_WINDOW turns, reset the session and reseed with the last N
+  // messages so the agent keeps recent context. Durable facts live in its
+  // memory, so this trims cost without going senile. Set 0 to disable.
+  const CONTEXT_WINDOW = parseInt(process.env.NOVA_CONTEXT_WINDOW || '12', 10);
+  if (CONTEXT_WINDOW > 0) {
+    const turnKey = `turns:${group.folder}`;
+    const turnCount = parseInt(getRouterState(turnKey) || '0', 10) + 1;
+    if (turnCount > CONTEXT_WINDOW && sessions[group.folder]) {
+      logger.info(
+        { group: group.name, turnCount, window: CONTEXT_WINDOW },
+        'Context window reached — resetting session, reseeding recent context',
+      );
+      delete sessions[group.folder]; // fresh session this turn (new id saved after)
+      const seed = getLastMessages(chatJid, CONTEXT_WINDOW);
+      if (seed.length) prompt = formatMessages(seed, TIMEZONE);
+      setRouterState(turnKey, '0');
+    } else {
+      setRouterState(turnKey, String(turnCount));
+    }
   }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch

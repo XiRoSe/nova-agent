@@ -134,23 +134,6 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // One-time: the first cost-tracking version recorded the SDK's CUMULATIVE
-  // total_cost_usd each turn (over-counted ~Nx). Clear those rows so the
-  // dashboard starts fresh with correct per-turn deltas. Runs once.
-  try {
-    const done = database
-      .prepare(`SELECT value FROM router_state WHERE key = 'usage_delta_migration'`)
-      .get();
-    if (!done) {
-      database.exec(`DELETE FROM usage_log`);
-      database.exec(`DELETE FROM router_state WHERE key LIKE 'usagecost:%'`);
-      database
-        .prepare(`INSERT OR REPLACE INTO router_state (key, value) VALUES ('usage_delta_migration', '1')`)
-        .run();
-    }
-  } catch {
-    /* router_state may not exist on a brand-new DB; safe to skip */
-  }
 
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
@@ -193,6 +176,24 @@ export function initDatabase(): void {
 
   db = new Database(dbPath);
   createSchema(db);
+
+  // One-time: the first cost-tracking build recorded the SDK's CUMULATIVE
+  // total_cost_usd each turn (over-counted ~Nx). Clear those rows so the
+  // dashboard resets to correct per-turn deltas. Guarded so it runs once.
+  try {
+    const done = db
+      .prepare(`SELECT value FROM router_state WHERE key = 'usage_reset_v3'`)
+      .get();
+    if (!done) {
+      const before = (db.prepare(`SELECT COUNT(*) AS c FROM usage_log`).get() as { c: number }).c;
+      db.exec(`DELETE FROM usage_log`);
+      db.exec(`DELETE FROM router_state WHERE key LIKE 'usagecost:%'`);
+      db.prepare(`INSERT OR REPLACE INTO router_state (key, value) VALUES ('usage_reset_v3', '1')`).run();
+      logger.info({ cleared: before }, 'Cleared inflated usage_log rows (cost delta migration)');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'usage_log reset migration failed');
+  }
 
   // Migrate from JSON files if they exist
   migrateJsonState();
@@ -327,6 +328,18 @@ export function storeMessage(msg: NewMessage): void {
  */
 export function clearMessages(chatJid: string): void {
   db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
+}
+
+// Last N messages for a chat (chronological order) — used to re-seed a fresh
+// session when the sliding context window resets, so the agent keeps recent
+// context without re-reading the entire (expensive) history.
+export function getLastMessages(chatJid: string, limit: number): NewMessage[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(chatJid, limit) as NewMessage[];
+  return rows.reverse();
 }
 
 // ── Usage / cost tracking (real SDK token cost, per turn) ────────────────
