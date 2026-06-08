@@ -295,6 +295,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
+  // No-hang guarantee: every turn ends with a user-facing message. If the agent
+  // produced no output (a silent finish, or an error before any narration was
+  // streamed), send a definitive final so the UI (e.g. the web "Thinking…"
+  // indicator) always resolves instead of hanging forever.
+  if (!outputSentToUser) {
+    const fallback =
+      output === 'error' || hadError
+        ? "I hit a problem and couldn't finish that one. Mind trying again or rephrasing?"
+        : "Done — I didn't have anything to add to that.";
+    await channel.sendMessage(chatJid, fallback).catch(() => {});
+    if (!chatJid.startsWith('platform:')) {
+      storeMessage({
+        id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        chat_jid: chatJid,
+        sender: ASSISTANT_NAME,
+        sender_name: ASSISTANT_NAME,
+        content: fallback,
+        timestamp: new Date().toISOString(),
+        is_from_me: true,
+        is_bot_message: true,
+      });
+    }
+    outputSentToUser = true;
+  }
+
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.

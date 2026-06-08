@@ -122,6 +122,20 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+// Extract the user-facing text from an assistant SDK message (joins text
+// blocks; ignores tool-use blocks). Used to stream progress as the agent works.
+function extractAssistantText(message: unknown): string {
+  const content = (message as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => (b as { type?: string }).type === "text")
+      .map((b) => (b as { text?: string }).text || "")
+      .join("");
+  }
+  return "";
+}
+
 // Fetch the user's connected GitHub token from the platform and configure git
 // so all github.com HTTPS operations authenticate as that user. Writes to
 // ~/.gitconfig (not env), so it survives the bash secret-stripping hook.
@@ -440,6 +454,7 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let lastStreamedText = ""; // dedupe the final result against streamed progress
 
   // Load additional MCP servers from .mcp.json (synced from host)
   const extraMcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {};
@@ -536,6 +551,14 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Stream the agent's narration as it works, so the user sees progress
+      // instead of dead air. The host strips <internal> blocks and delivers
+      // each chunk to the channel + web. The final 'result' is deduped below.
+      const partial = extractAssistantText(message).trim();
+      if (partial) {
+        lastStreamedText = partial;
+        writeOutput({ status: 'success', result: partial, newSessionId });
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -552,9 +575,14 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      // If the final result is identical to the last streamed chunk, we already
+      // delivered it — emit a session-update marker (result:null) instead of
+      // sending the same text twice.
+      const alreadyStreamed =
+        !!textResult && textResult.trim() === lastStreamedText;
       writeOutput({
         status: 'success',
-        result: textResult || null,
+        result: alreadyStreamed ? null : textResult || null,
         newSessionId
       });
     }
