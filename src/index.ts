@@ -51,6 +51,10 @@ import {
   storeMessage,
   clearMessages,
   getMessagesSinceTimestamp,
+  recordUsage,
+  getUsageSummary,
+  upsertSubagent,
+  getSubagents,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -251,6 +255,29 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let outputSentToUser = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
+    // Record real token cost for this turn (per-channel) for the dashboard.
+    if (result.costUsd && result.costUsd > 0) {
+      const ch = chatJid.startsWith('platform:')
+        ? 'platform'
+        : chatJid.startsWith('tg:')
+          ? 'telegram'
+          : chatJid.startsWith('slack:')
+            ? 'slack'
+            : chatJid.startsWith('dc:')
+              ? 'discord'
+              : chatJid.includes('whatsapp') || chatJid.endsWith('@g.us')
+                ? 'whatsapp'
+                : 'other';
+      recordUsage(ch, result.costUsd);
+    }
+    // Track sub-agents / background tasks the agent spawns.
+    if (result.subagent) {
+      upsertSubagent({
+        id: result.subagent.id,
+        status: result.subagent.status,
+        summary: result.subagent.summary,
+      });
+    }
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -876,6 +903,32 @@ async function main(): Promise<void> {
     if (req.url === '/api/notifications') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ notifications: getAndClearNotifications() }));
+      return;
+    }
+
+    // Real cost/usage for this agent (today + month + message count).
+    if (req.url?.startsWith('/api/usage') && req.method === 'GET') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getUsageSummary()));
+      } catch (err) {
+        logger.error({ err }, 'Usage API error');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ today: 0, month: 0, messageCount: 0 }));
+      }
+      return;
+    }
+
+    // Sub-agents / background tasks this agent has spawned.
+    if (req.url?.startsWith('/api/swarm') && req.method === 'GET') {
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ subagents: getSubagents() }));
+      } catch (err) {
+        logger.error({ err }, 'Swarm API error');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ subagents: [] }));
+      }
       return;
     }
 

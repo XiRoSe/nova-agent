@@ -35,6 +35,8 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  costUsd?: number; // real cumulative token cost for the turn (from SDK result)
+  subagent?: { id: string; status: string; summary?: string }; // SDK task event
 }
 
 interface SessionEntry {
@@ -569,6 +571,16 @@ async function runQuery(
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
       const tn = message as { task_id: string; status: string; summary: string };
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
+      // Surface sub-agent / background-task activity to the host so it shows
+      // on the dashboard. result:null keeps it out of the chat transcript.
+      if (tn.task_id) {
+        writeOutput({
+          status: 'success',
+          result: null,
+          newSessionId,
+          subagent: { id: tn.task_id, status: tn.status || 'active', summary: tn.summary },
+        });
+      }
     }
 
     if (message.type === 'result') {
@@ -580,10 +592,12 @@ async function runQuery(
       // sending the same text twice.
       const alreadyStreamed =
         !!textResult && textResult.trim() === lastStreamedText;
+      const costUsd = (message as { total_cost_usd?: number }).total_cost_usd;
       writeOutput({
         status: 'success',
         result: alreadyStreamed ? null : textResult || null,
-        newSessionId
+        newSessionId,
+        costUsd,
       });
     }
   }

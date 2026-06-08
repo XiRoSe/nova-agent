@@ -55,6 +55,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  costUsd?: number; // real cumulative token cost for the turn (from SDK result)
+  subagent?: { id: string; status: string; summary?: string }; // SDK task event
 }
 
 interface VolumeMount {

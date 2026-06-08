@@ -82,6 +82,27 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    -- Real per-turn token cost reported by the Claude Agent SDK.
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      timestamp TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(timestamp);
+
+    -- Sub-agents / background tasks the agent spawns (from SDK task events).
+    CREATE TABLE IF NOT EXISTS subagents (
+      id TEXT PRIMARY KEY,
+      role TEXT,
+      status TEXT,
+      summary TEXT,
+      cost_usd REAL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_subagents_updated ON subagents(updated_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -288,6 +309,66 @@ export function storeMessage(msg: NewMessage): void {
  */
 export function clearMessages(chatJid: string): void {
   db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(chatJid);
+}
+
+// ── Usage / cost tracking (real SDK token cost, per turn) ────────────────
+export function recordUsage(channel: string, costUsd: number): void {
+  if (!costUsd || costUsd <= 0) return;
+  db.prepare(
+    `INSERT INTO usage_log (channel, cost_usd, timestamp) VALUES (?, ?, ?)`,
+  ).run(channel, costUsd, new Date().toISOString());
+}
+
+export function getUsageSummary(): {
+  today: number;
+  month: number;
+  messageCount: number;
+} {
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const today = (
+    db.prepare(`SELECT COALESCE(SUM(cost_usd),0) AS s FROM usage_log WHERE timestamp >= ?`).get(startOfDay) as { s: number }
+  ).s;
+  const month = (
+    db.prepare(`SELECT COALESCE(SUM(cost_usd),0) AS s FROM usage_log WHERE timestamp >= ?`).get(startOfMonth) as { s: number }
+  ).s;
+  const messageCount = (
+    db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE is_bot_message = 1 AND timestamp >= ?`).get(startOfMonth) as { c: number }
+  ).c;
+  return { today, month, messageCount };
+}
+
+// ── Sub-agent / background-task tracking ─────────────────────────────────
+export function upsertSubagent(s: {
+  id: string;
+  role?: string;
+  status: string;
+  summary?: string;
+}): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO subagents (id, role, status, summary, started_at, updated_at)
+     VALUES (@id, @role, @status, @summary, @now, @now)
+     ON CONFLICT(id) DO UPDATE SET
+       status = excluded.status,
+       summary = COALESCE(excluded.summary, subagents.summary),
+       updated_at = excluded.updated_at`,
+  ).run({ id: s.id, role: s.role || 'Sub-agent', status: s.status, summary: s.summary || null, now });
+}
+
+export function getSubagents(limit = 50): Array<{
+  id: string;
+  role: string;
+  status: string;
+  summary: string | null;
+  cost_usd: number;
+  started_at: string;
+  updated_at: string;
+}> {
+  return db
+    .prepare(`SELECT * FROM subagents ORDER BY updated_at DESC LIMIT ?`)
+    .all(limit) as ReturnType<typeof getSubagents>;
 }
 
 /**
