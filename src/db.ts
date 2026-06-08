@@ -134,6 +134,24 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // One-time: the first cost-tracking version recorded the SDK's CUMULATIVE
+  // total_cost_usd each turn (over-counted ~Nx). Clear those rows so the
+  // dashboard starts fresh with correct per-turn deltas. Runs once.
+  try {
+    const done = database
+      .prepare(`SELECT value FROM router_state WHERE key = 'usage_delta_migration'`)
+      .get();
+    if (!done) {
+      database.exec(`DELETE FROM usage_log`);
+      database.exec(`DELETE FROM router_state WHERE key LIKE 'usagecost:%'`);
+      database
+        .prepare(`INSERT OR REPLACE INTO router_state (key, value) VALUES ('usage_delta_migration', '1')`)
+        .run();
+    }
+  } catch {
+    /* router_state may not exist on a brand-new DB; safe to skip */
+  }
+
   // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(

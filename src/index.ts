@@ -257,6 +257,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Record real token cost for this turn (per-channel) for the dashboard.
+    // The SDK's total_cost_usd is CUMULATIVE for the (resumed) session, so we
+    // record only the per-turn delta vs the last seen total. A drop (raw < last)
+    // means a fresh session, so `raw` itself is this turn's cost.
     if (result.costUsd && result.costUsd > 0) {
       const ch = chatJid.startsWith('platform:')
         ? 'platform'
@@ -269,7 +272,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               : chatJid.includes('whatsapp') || chatJid.endsWith('@g.us')
                 ? 'whatsapp'
                 : 'other';
-      recordUsage(ch, result.costUsd);
+      const costKey = `usagecost:${group.folder}`;
+      const lastTotal = parseFloat(getRouterState(costKey) || '0');
+      const raw = result.costUsd;
+      const delta = raw >= lastTotal ? raw - lastTotal : raw;
+      if (delta > 0) recordUsage(ch, delta);
+      setRouterState(costKey, String(raw));
     }
     // Track sub-agents / background tasks the agent spawns.
     if (result.subagent) {
