@@ -553,13 +553,21 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
-      // Stream the agent's narration as it works, so the user sees progress
-      // instead of dead air. The host strips <internal> blocks and delivers
-      // each chunk to the channel + web. The final 'result' is deduped below.
-      const partial = extractAssistantText(message).trim();
-      if (partial) {
-        lastStreamedText = partial;
-        writeOutput({ status: 'success', result: partial, newSessionId });
+      // Stream narration as progress ONLY when this message also makes a tool
+      // call — that's genuine work-in-progress ("let me check…" + the tool).
+      // Pure-text assistant messages (intermediate thoughts or the final
+      // answer) are delivered exactly once via the 'result' below, so a simple
+      // reply is a single bubble instead of several.
+      const content = (message as { message?: { content?: unknown } }).message?.content;
+      const hasToolUse =
+        Array.isArray(content) &&
+        content.some((b) => (b as { type?: string }).type === 'tool_use');
+      if (hasToolUse) {
+        const partial = extractAssistantText(message).trim();
+        if (partial) {
+          lastStreamedText = partial;
+          writeOutput({ status: 'success', result: partial, newSessionId });
+        }
       }
     }
 
