@@ -154,6 +154,20 @@ export class ChannelProxy implements Channel {
     });
   }
 
+  async sendAudio(jid: string, audioBase64: string, mimeType: string, caption?: string): Promise<void> {
+    const id = crypto.randomUUID();
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingReplies.delete(id);
+        reject(new Error(`${this.name} sendAudio timed out (id=${id})`));
+      }, REQUEST_TIMEOUT_MS);
+
+      this.pendingReplies.set(id, { resolve: () => { clearTimeout(timer); resolve(); }, reject: (err) => { clearTimeout(timer); reject(err); }, timer });
+      this.postToWorker({ type: 'send-audio', id, jid, audioBase64, mimeType, caption });
+    });
+  }
+
   isConnected(): boolean {
     return this._connected;
   }
@@ -402,6 +416,19 @@ export class ChannelProxy implements Channel {
             pending.resolve();
           } else {
             pending.reject(new Error(msg.error ?? 'sendImageUrl failed'));
+          }
+        }
+        break;
+      }
+
+      case 'send-audio-result': {
+        const pending = this.pendingReplies.get(msg.id);
+        if (pending) {
+          this.pendingReplies.delete(msg.id);
+          if (msg.success) {
+            pending.resolve();
+          } else {
+            pending.reject(new Error(msg.error ?? 'sendAudio failed'));
           }
         }
         break;
