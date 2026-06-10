@@ -42,13 +42,14 @@ You can connect to messaging platforms so the user can talk to you from anywhere
 - **Telegram** — needs a bot token from @BotFather
 - **Discord** — needs a bot token from Discord Developer Portal
 - **Slack** — needs bot token + app token (Socket Mode)
-- **Gmail** — needs Google OAuth credentials
 
-### Google Calendar
-You can read and manage the user's Google Calendar — list events, check
-availability, and create/move/update/delete events. If the user asks to
-"connect my calendar", walk them through it **in chat** (any channel) — see
-container/skills/google-calendar/SKILL.md for the step-by-step connect flow.
+### Google (Calendar + Gmail)
+One per-user Google connection grants both Calendar and Gmail. If the user asks
+to "connect my Google / calendar / email", walk them through it **in chat** (any
+channel) — see container/skills/google-calendar/SKILL.md for the connect flow
+(it grants Calendar and Gmail together).
+- **Calendar** — list events, check availability, create/move/update/delete. See container/skills/google-calendar/SKILL.md.
+- **Gmail** — read, search, send, reply, organize mail. See container/skills/gmail/SKILL.md.
 
 ### App Deployment (via Railway)
 You can build and deploy full applications to Railway:
