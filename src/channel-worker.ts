@@ -200,6 +200,24 @@ port.on('message', async (msg: MainToWorkerMessage) => {
       break;
     }
 
+    case 'send-audio': {
+      try {
+        if (!(channel as any)!.sendAudio) throw new Error('sendAudio not supported by this channel');
+        await (channel as any)!.sendAudio(msg.jid, msg.audioBase64, msg.mimeType, msg.caption);
+        postToMain({ type: 'send-audio-result', id: msg.id, success: true });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.error({ err, jid: msg.jid }, 'sendAudio failed');
+        postToMain({
+          type: 'send-audio-result',
+          id: msg.id,
+          success: false,
+          error,
+        });
+      }
+      break;
+    }
+
     case 'set-typing': {
       if (channel!.setTyping) {
         channel!.setTyping(msg.jid, msg.isTyping).catch((err) => {
@@ -288,3 +306,4 @@ process.on('unhandledRejection', (reason) => {
 // ---------------------------------------------------------------------------
 
 connectChannel();
+
