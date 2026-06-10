@@ -46,8 +46,9 @@ You can connect to messaging platforms so the user can talk to you from anywhere
 
 ### Google Calendar
 You can read and manage the user's Google Calendar — list events, check
-availability, and create/move/update/delete events. Uses the same Google OAuth
-as Gmail (`NOVA_GOOGLE_*` env vars). See container/skills/google-calendar/SKILL.md.
+availability, and create/move/update/delete events. The user connects their own
+Google account in the dashboard; you fetch an access token on demand from the
+platform. See container/skills/google-calendar/SKILL.md.
 
 ### App Deployment (via Railway)
 You can build and deploy full applications to Railway:

@@ -11,31 +11,21 @@ behalf.
 - User asks to move, reschedule, update, or cancel an event
 - Any task that needs to read or change the user's calendar
 
-## Auth / Setup
-Calendar uses the same Google OAuth as Gmail. The credentials are provided as
-env vars (available in your shell):
-
-- `NOVA_GOOGLE_CLIENT_ID`
-- `NOVA_GOOGLE_CLIENT_SECRET`
-- `NOVA_GOOGLE_REFRESH_TOKEN` (must be authorized with the
-  `https://www.googleapis.com/auth/calendar` scope)
-
-**If `NOVA_GOOGLE_REFRESH_TOKEN` is empty**, Google Calendar isn't connected —
-tell the user: *"Connect your Google Calendar first (Settings → Connect Google,
-or ask the admin to set it up), then I can manage it for you."* Do not guess.
-
 ## Get an access token (always do this first)
-Refresh tokens are long-lived; mint a short-lived access token for each session:
+Each user connects their **own** Google account in the Nova dashboard
+(Settings → Connect Google). The token lives in the platform DB; you fetch a
+ready, auto-refreshed access token on demand — never handle the user's refresh
+token yourself:
 
 ```bash
-ACCESS_TOKEN=$(curl -s -X POST https://oauth2.googleapis.com/token \
-  -d "client_id=$NOVA_GOOGLE_CLIENT_ID" \
-  -d "client_secret=$NOVA_GOOGLE_CLIENT_SECRET" \
-  -d "refresh_token=$NOVA_GOOGLE_REFRESH_TOKEN" \
-  -d "grant_type=refresh_token" \
-  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).access_token||''))")
+RESP=$(curl -s "$NOVA_PLATFORM_URL/api/agent/google-token" \
+  -H "Authorization: Bearer $NOVA_AGENT_TOKEN")
+ACCESS_TOKEN=$(echo "$RESP" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).token||'')}catch{console.log('')}})")
 ```
-If `ACCESS_TOKEN` is empty, the connection is broken — tell the user to reconnect.
+
+**If `ACCESS_TOKEN` is empty** (the response has `connected:false`), this user
+hasn't connected Google Calendar — tell them: *"Connect your Google Calendar in
+the Nova dashboard → Settings, then I can manage it for you."* Do not guess.
 
 ## Operations (Calendar v3 REST API)
 Use `primary` for the user's main calendar. Times are RFC3339
