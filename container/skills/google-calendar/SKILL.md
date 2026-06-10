@@ -21,18 +21,23 @@ If `ACCESS_TOKEN` is non-empty → connected, go straight to the operation.
 If empty → not connected; offer to connect and run the flow below.
 
 ## Connecting (first time) — do this conversationally, step by step
-Keep it friendly and simple; one step at a time. The user uses their **own**
-Google app so there's no Google approval/verification needed.
+Keep it friendly; one step at a time. The user uses their **own** Google app so
+there's no Google approval/verification needed.
 
-1. **Get the redirect URI to give them:**
+⚠️ **CRITICAL: the redirect URI and the auth link below are exact strings you
+get from commands. Copy them VERBATIM into your message — character for
+character. NEVER invent or edit the path (it is `/api/google/callback`, NOT
+`/api/auth/...`). If you guess, the connection fails.**
+
+1. **Get the exact redirect URI** (run this; do not type the URL from memory):
    ```bash
-   curl -s "$NOVA_PLATFORM_URL/api/agent/google-callback-url" -H "Authorization: Bearer $NOVA_AGENT_TOKEN"
+   echo "$NOVA_PLATFORM_URL/api/google/callback"
    ```
-   Tell the user (plainly):
-   > "To connect your Google Calendar (takes ~2 min, and no Google approval needed because it's your own app):
-   > 1. Go to **console.cloud.google.com** → APIs & Services → **Credentials** → **Create credentials → OAuth client ID → Web application**.
-   > 2. Under **APIs & Services → Library**, enable the **Google Calendar API**.
-   > 3. In the OAuth client, add this **Authorized redirect URI**: `<CALLBACK_URL>`
+   Then tell the user:
+   > "To connect your Google Calendar (~2 min, your own app so no Google approval needed):
+   > 1. **console.cloud.google.com** → APIs & Services → **Library** → enable **Google Calendar API**.
+   > 2. APIs & Services → **Credentials → Create credentials → OAuth client ID → Web application**.
+   > 3. Add this **Authorized redirect URI** (paste exactly): `<paste the echo output here, verbatim>`
    > 4. Copy the **Client ID** and **Client Secret** and send them to me."
 
 2. **When they paste the Client ID + Secret**, save them:
@@ -42,22 +47,22 @@ Google app so there's no Google approval/verification needed.
      -d "{\"clientId\":\"THE_ID\",\"clientSecret\":\"THE_SECRET\"}"
    ```
 
-3. **Get the authorization link and send it to them:**
+3. **Get the authorization link** and give it to them verbatim:
    ```bash
    curl -s "$NOVA_PLATFORM_URL/api/agent/google-auth-url" -H "Authorization: Bearer $NOVA_AGENT_TOKEN" \
      | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{console.log(JSON.parse(s).url||'')})"
    ```
-   Tell the user:
-   > "Open this link, pick your Google account, and approve. You'll see an
-   > 'unverified app' screen — that's expected since it's *your own* app, so
-   > click **Advanced → Go to … (unsafe)** and continue. Then tell me 'done'."
-   > `<the url>`
+   Paste the FULL url unchanged, then:
+   > "Open this link, pick your Google account, approve. You'll see an
+   > 'unverified app' screen — expected, it's *your own* app — click
+   > **Advanced → Go to … (unsafe)** and continue. Then tell me 'done'."
 
 4. **When they say done, verify:**
    ```bash
    curl -s "$NOVA_PLATFORM_URL/api/agent/google-connected" -H "Authorization: Bearer $NOVA_AGENT_TOKEN"
    ```
-   If `connected:true` → "🎉 Your calendar's connected! Want me to show your next few events?" If still false → ask them to finish the authorization and try again.
+   `connected:true` → "🎉 Connected! Want me to show your next few events?"
+   Otherwise → ask them to finish the authorization, then check again.
 
 ## Operations (Calendar v3 REST API)
 Use `primary` for the main calendar. Times are RFC3339.
