@@ -394,6 +394,40 @@ export class TelegramChannel implements Channel {
     }
   }
 
+  async sendAudio(jid: string, audioBase64: string, mimeType: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn({ jid }, 'Telegram bot not initialized, audio not sent');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const audioBuffer = Buffer.from(audioBase64, 'base64');
+      const replyTo = this.activeThread.get(numericId);
+      const replyParams = replyTo
+        ? { reply_parameters: { message_id: replyTo } }
+        : {};
+
+      // Send as voice if ogg, otherwise as audio
+      const isVoice = mimeType === 'audio/ogg';
+      if (isVoice) {
+        await this.bot.api.sendVoice(numericId, new InputFile(audioBuffer, 'voice.ogg'), {
+          caption: caption || '',
+          ...replyParams,
+        });
+      } else {
+        const ext = mimeType === 'audio/mpeg' ? 'mp3' : mimeType === 'audio/wav' ? 'wav' : 'mp3';
+        await this.bot.api.sendAudio(numericId, new InputFile(audioBuffer, `audio.${ext}`), {
+          caption: caption || '',
+          ...replyParams,
+        });
+      }
+
+      logger.info({ jid }, 'Telegram audio sent');
+    } catch (err) {
+      logger.warn({ jid, err }, 'Failed to send Telegram audio');
+    }
+  }
+
   isConnected(): boolean {
     return this.bot !== null;
   }
@@ -431,3 +465,4 @@ registerChannel('telegram', (opts: ChannelOpts) => {
   }
   return new TelegramChannel(token, opts);
 });
+
