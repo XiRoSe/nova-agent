@@ -53,7 +53,8 @@ export type MainToWorkerMessage =
   | { type: 'update-registered-groups'; groups: Record<string, RegisteredGroupData> }
   | { type: 'retry-pairing' }
   | { type: 'send-image'; id: string; jid: string; imageBase64: string; mimeType: string; caption?: string }
-  | { type: 'send-image-url'; id: string; jid: string; imageUrl: string; caption?: string };
+  | { type: 'send-image-url'; id: string; jid: string; imageUrl: string; caption?: string }
+  | { type: 'send-audio'; id: string; jid: string; audioBase64: string; mimeType: string; caption?: string };
 
 // ---------------------------------------------------------------------------
 // Worker -> Main thread messages
@@ -81,4 +82,5 @@ export type WorkerToMainMessage =
     }
   | { type: 'log'; level: string; msg: string; data?: Record<string, unknown> }
   | { type: 'send-image-result'; id: string; success: boolean; error?: string }
-  | { type: 'send-image-url-result'; id: string; success: boolean; error?: string };
+  | { type: 'send-image-url-result'; id: string; success: boolean; error?: string }
+  | { type: 'send-audio-result'; id: string; success: boolean; error?: string };
