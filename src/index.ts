@@ -1335,6 +1335,15 @@ async function main(): Promise<void> {
       logger.warn({ jid }, 'Channel does not support sendImageUrl');
       return Promise.resolve();
     },
+    sendAudio: (jid, audioBase64, mimeType, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (typeof (channel as { sendAudio?: unknown }).sendAudio === 'function') {
+        return (channel as unknown as { sendAudio: (jid: string, audioBase64: string, mimeType: string, caption?: string) => Promise<void> }).sendAudio(jid, audioBase64, mimeType, caption);
+      }
+      logger.warn({ jid }, 'Channel does not support sendAudio');
+      return Promise.resolve();
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {
