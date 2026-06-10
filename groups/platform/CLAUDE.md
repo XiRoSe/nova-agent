@@ -46,9 +46,9 @@ You can connect to messaging platforms so the user can talk to you from anywhere
 
 ### Google Calendar
 You can read and manage the user's Google Calendar — list events, check
-availability, and create/move/update/delete events. The user connects their own
-Google account in the dashboard; you fetch an access token on demand from the
-platform. See container/skills/google-calendar/SKILL.md.
+availability, and create/move/update/delete events. If the user asks to
+"connect my calendar", walk them through it **in chat** (any channel) — see
+container/skills/google-calendar/SKILL.md for the step-by-step connect flow.
 
 ### App Deployment (via Railway)
 You can build and deploy full applications to Railway:

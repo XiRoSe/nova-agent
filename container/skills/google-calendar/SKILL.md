@@ -3,33 +3,64 @@
 ## Description
 Read and manage the user's Google Calendar — list upcoming events, check
 availability (free/busy), and create, move, update, or delete events on their
-behalf.
+behalf. Connecting happens **in chat** (any channel) — you walk the user
+through it; nothing to do on a website.
 
 ## When to Use
 - User asks "what's on my calendar", "am I free…", "when's my next meeting"
-- User asks to schedule / book / add an event or reminder
-- User asks to move, reschedule, update, or cancel an event
-- Any task that needs to read or change the user's calendar
+- User asks to schedule / book / add / move / reschedule / cancel an event
+- User says "connect my (Google) calendar" → run the **Connecting** flow below
 
-## Get an access token (always do this first)
-Each user connects their **own** Google account in the Nova dashboard
-(Settings → Connect Google). The token lives in the platform DB; you fetch a
-ready, auto-refreshed access token on demand — never handle the user's refresh
-token yourself:
-
+## Always check connection first
+Before any calendar action, get a token:
 ```bash
-RESP=$(curl -s "$NOVA_PLATFORM_URL/api/agent/google-token" \
-  -H "Authorization: Bearer $NOVA_AGENT_TOKEN")
+RESP=$(curl -s "$NOVA_PLATFORM_URL/api/agent/google-token" -H "Authorization: Bearer $NOVA_AGENT_TOKEN")
 ACCESS_TOKEN=$(echo "$RESP" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).token||'')}catch{console.log('')}})")
 ```
+If `ACCESS_TOKEN` is non-empty → connected, go straight to the operation.
+If empty → not connected; offer to connect and run the flow below.
 
-**If `ACCESS_TOKEN` is empty** (the response has `connected:false`), this user
-hasn't connected Google Calendar — tell them: *"Connect your Google Calendar in
-the Nova dashboard → Settings, then I can manage it for you."* Do not guess.
+## Connecting (first time) — do this conversationally, step by step
+Keep it friendly and simple; one step at a time. The user uses their **own**
+Google app so there's no Google approval/verification needed.
+
+1. **Get the redirect URI to give them:**
+   ```bash
+   curl -s "$NOVA_PLATFORM_URL/api/agent/google-callback-url" -H "Authorization: Bearer $NOVA_AGENT_TOKEN"
+   ```
+   Tell the user (plainly):
+   > "To connect your Google Calendar (takes ~2 min, and no Google approval needed because it's your own app):
+   > 1. Go to **console.cloud.google.com** → APIs & Services → **Credentials** → **Create credentials → OAuth client ID → Web application**.
+   > 2. Under **APIs & Services → Library**, enable the **Google Calendar API**.
+   > 3. In the OAuth client, add this **Authorized redirect URI**: `<CALLBACK_URL>`
+   > 4. Copy the **Client ID** and **Client Secret** and send them to me."
+
+2. **When they paste the Client ID + Secret**, save them:
+   ```bash
+   curl -s -X POST "$NOVA_PLATFORM_URL/api/agent/google-config" \
+     -H "Authorization: Bearer $NOVA_AGENT_TOKEN" -H "Content-Type: application/json" \
+     -d "{\"clientId\":\"THE_ID\",\"clientSecret\":\"THE_SECRET\"}"
+   ```
+
+3. **Get the authorization link and send it to them:**
+   ```bash
+   curl -s "$NOVA_PLATFORM_URL/api/agent/google-auth-url" -H "Authorization: Bearer $NOVA_AGENT_TOKEN" \
+     | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{console.log(JSON.parse(s).url||'')})"
+   ```
+   Tell the user:
+   > "Open this link, pick your Google account, and approve. You'll see an
+   > 'unverified app' screen — that's expected since it's *your own* app, so
+   > click **Advanced → Go to … (unsafe)** and continue. Then tell me 'done'."
+   > `<the url>`
+
+4. **When they say done, verify:**
+   ```bash
+   curl -s "$NOVA_PLATFORM_URL/api/agent/google-connected" -H "Authorization: Bearer $NOVA_AGENT_TOKEN"
+   ```
+   If `connected:true` → "🎉 Your calendar's connected! Want me to show your next few events?" If still false → ask them to finish the authorization and try again.
 
 ## Operations (Calendar v3 REST API)
-Use `primary` for the user's main calendar. Times are RFC3339
-(`2026-06-11T15:00:00-07:00` or with a `timeZone`).
+Use `primary` for the main calendar. Times are RFC3339.
 
 **List upcoming events:**
 ```bash
@@ -37,51 +68,23 @@ NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 curl -s "https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=15&timeMin=$NOW" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
-
-**Check free/busy for a window:**
+**Free/busy:**
 ```bash
 curl -s -X POST "https://www.googleapis.com/calendar/v3/freeBusy" \
   -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
   -d '{"timeMin":"2026-06-11T09:00:00Z","timeMax":"2026-06-11T18:00:00Z","items":[{"id":"primary"}]}'
 ```
-
-**Create an event:**
+**Create event:**
 ```bash
 curl -s -X POST "https://www.googleapis.com/calendar/v3/calendars/primary/events" \
   -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{
-        "summary":"Lunch with Dana",
-        "location":"Cafe Noir",
-        "description":"Catch-up",
-        "start":{"dateTime":"2026-06-11T12:30:00","timeZone":"Asia/Jerusalem"},
-        "end":{"dateTime":"2026-06-11T13:30:00","timeZone":"Asia/Jerusalem"},
-        "attendees":[{"email":"dana@example.com"}]
-      }'
+  -d '{"summary":"Lunch with Dana","start":{"dateTime":"2026-06-11T12:30:00","timeZone":"Asia/Jerusalem"},"end":{"dateTime":"2026-06-11T13:30:00","timeZone":"Asia/Jerusalem"}}'
 ```
-The response includes the event `id` and `htmlLink` — share the link with the user.
-
-**Update / move an event** (PATCH only the fields that change; need the event id):
-```bash
-curl -s -X PATCH "https://www.googleapis.com/calendar/v3/calendars/primary/events/EVENT_ID" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
-  -d '{"start":{"dateTime":"2026-06-11T14:00:00","timeZone":"Asia/Jerusalem"},
-       "end":{"dateTime":"2026-06-11T15:00:00","timeZone":"Asia/Jerusalem"}}'
-```
-
-**Delete / cancel an event:**
-```bash
-curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events/EVENT_ID" \
-  -H "Authorization: Bearer $ACCESS_TOKEN"   # 204 = deleted
-```
-
-**Find an event id** before updating/deleting: list events, match by summary/time,
-read its `id`. Confirm with the user before deleting or moving anything.
+**Update/move** (PATCH, need event id): `PATCH …/events/EVENT_ID` with the changed fields.
+**Delete** (need event id): `DELETE …/events/EVENT_ID` (204 = done).
+Find an event id by listing events and matching summary/time. Confirm before deleting or moving.
 
 ## Notes
-- Default to the user's timezone; ask if it's ambiguous.
-- Never print the access token or the refresh token.
-- For "schedule a meeting with X", check free/busy first, then create the event
-  and report the time + link.
-- Be concise: after an action, confirm what you did (e.g. "Booked Lunch with Dana,
-  Thu 12:30–13:30 — here's the link").
+- Default to the user's timezone; ask if ambiguous.
+- Never print tokens or the client secret.
+- After an action, confirm concisely with the time + link.
