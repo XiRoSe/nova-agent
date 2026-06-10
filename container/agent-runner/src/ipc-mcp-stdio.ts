@@ -102,6 +102,42 @@ server.tool(
 );
 
 server.tool(
+  'send_audio',
+  "Send an audio file to the user or group immediately while you're still running. Use this to share voice messages, TTS, or any audio content.",
+  {
+    audio_path: z.string().describe('Local file path to the audio file to send (mp3, ogg, wav, etc.)'),
+    caption: z.string().optional().describe('Optional caption for the audio'),
+    target_jid: z.string().optional().describe('(Main group only) Send to a different channel by JID. Defaults to the current group.'),
+  },
+  async (args) => {
+    const targetJid = isMain && args.target_jid ? args.target_jid : chatJid;
+
+    const audioBase64 = fs.readFileSync(args.audio_path).toString('base64');
+    const ext = path.extname(args.audio_path).toLowerCase();
+    const mimeType =
+      ext === '.ogg' ? 'audio/ogg' :
+      ext === '.mp3' ? 'audio/mpeg' :
+      ext === '.wav' ? 'audio/wav' :
+      ext === '.m4a' ? 'audio/mp4' :
+      'audio/mpeg';
+
+    const data = {
+      type: 'audio',
+      chatJid: targetJid,
+      audioBase64,
+      mimeType,
+      caption: args.caption,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Audio sent.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
@@ -784,3 +820,4 @@ server.tool(
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
