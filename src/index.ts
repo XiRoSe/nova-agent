@@ -175,6 +175,35 @@ export function _setRegisteredGroups(
 }
 
 /**
+ * Trim a messages array to fit within MAX_PROMPT_CHARS (approx tokens * 4).
+ * Keeps the most recent messages. Returns the trimmed list and whether trimming occurred.
+ */
+function trimToCharLimit(
+  messages: NewMessage[],
+  maxChars: number,
+): { messages: NewMessage[]; trimmed: boolean } {
+  if (maxChars <= 0) return { messages, trimmed: false };
+  const total = messages.reduce((s, m) => s + (m.content?.length ?? 0) + 80, 0);
+  if (total <= maxChars) return { messages, trimmed: false };
+
+  const kept: NewMessage[] = [];
+  let running = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const len = (messages[i].content?.length ?? 0) + 80;
+    if (running + len > maxChars && kept.length > 0) break;
+    kept.unshift(messages[i]);
+    running += len;
+  }
+  return { messages: kept, trimmed: true };
+}
+
+const TRIM_NOTE =
+  '[CONTEXT TRIMMED — only the most recent messages are shown to save tokens. ' +
+  'Be concise: skip preambles, avoid repeating what was already said, answer directly.]\n';
+
+const MAX_PROMPT_CHARS = parseInt(process.env.NOVA_MAX_PROMPT_CHARS || '8000', 10);
+
+/**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
  */
@@ -223,7 +252,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ).slice(-5);
     prompt = formatThreadWithContext(threadMsgs, recent);
   } else {
-    prompt = formatMessages(missedMessages, TIMEZONE);
+    const { messages: trimmed, trimmed: wasTrimmed } = trimToCharLimit(missedMessages, MAX_PROMPT_CHARS);
+    prompt = (wasTrimmed ? TRIM_NOTE : '') + formatMessages(trimmed, TIMEZONE);
   }
 
   // ── Sliding context window ────────────────────────────────────────────────
@@ -232,7 +262,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // NOVA_CONTEXT_WINDOW turns, reset the session and reseed with the last N
   // messages so the agent keeps recent context. Durable facts live in its
   // memory, so this trims cost without going senile. Set 0 to disable.
-  const CONTEXT_WINDOW = parseInt(process.env.NOVA_CONTEXT_WINDOW || '12', 10);
+  const CONTEXT_WINDOW = parseInt(process.env.NOVA_CONTEXT_WINDOW || '6', 10);
   if (CONTEXT_WINDOW > 0) {
     const turnKey = `turns:${group.folder}`;
     const turnCount = parseInt(getRouterState(turnKey) || '0', 10) + 1;
@@ -570,7 +600,8 @@ async function startMessageLoop(): Promise<void> {
               ASSISTANT_NAME,
             );
             messagesToSend = allPending.length > 0 ? allPending : groupMessages;
-            formatted = formatMessages(messagesToSend, TIMEZONE);
+            const { messages: trimmedPipe, trimmed: pipeTrimmed } = trimToCharLimit(messagesToSend, MAX_PROMPT_CHARS);
+            formatted = (pipeTrimmed ? TRIM_NOTE : '') + formatMessages(trimmedPipe, TIMEZONE);
           }
 
           if (queue.sendMessage(chatJid, formatted)) {
