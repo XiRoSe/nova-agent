@@ -24,6 +24,11 @@ import type { Channel, RegisteredGroup } from './types.js';
 // Import the barrel file — this triggers every channel's registerChannel() call
 import './channels/index.js';
 import { getChannelFactory } from './channels/registry.js';
+import { initDatabase } from './db.js';
+
+// Initialize the database in the worker thread so functions like
+// getLastGroupSync() / setLastGroupSync() work correctly here.
+initDatabase();
 
 // ---------------------------------------------------------------------------
 // Safety checks
