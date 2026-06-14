@@ -48,6 +48,7 @@ export class WhatsAppChannel implements Channel {
   private pairingGaveUp = false;
   private flushing = false;
   private groupSyncTimerStarted = false;
+  private sentMessageIds = new Set<string>();
 
   private opts: WhatsAppChannelOpts;
 
