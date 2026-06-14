@@ -216,6 +216,16 @@ export async function runRailwayAgent(
         { group: group.name, processName },
         'Railway agent timeout, sending SIGTERM',
       );
+      // Notify the user that the agent was stopped due to time limit
+      if (onOutput) {
+        const minutes = Math.round(configTimeout / 60000);
+        outputChain = outputChain.then(() =>
+          onOutput({
+            status: 'success',
+            result: `\u23F1\uFE0F \u05E0\u05E2\u05E6\u05E8\u05EA\u05D9 \u05D1\u05D2\u05DC\u05DC \u05DE\u05D2\u05D1\u05DC\u05EA \u05D6\u05DE\u05DF \u05E8\u05D9\u05E6\u05D4 \u05E9\u05DC ${minutes} \u05D3\u05E7\u05D5\u05EA. \u05D0\u05E4\u05E9\u05E8 \u05DC\u05E9\u05DC\u05D5\u05D7 \u05E9\u05D5\u05D1 \u05D5\u05D0\u05DE\u05E9\u05D9\u05DA \u05DE\u05D0\u05D9\u05E4\u05D4 \u05E9\u05E2\u05E6\u05E8\u05E0\u05D5.`,
+          }).catch(() => {}),
+        );
+      }
       child.kill('SIGTERM');
       setTimeout(() => {
         if (!child.killed) {
