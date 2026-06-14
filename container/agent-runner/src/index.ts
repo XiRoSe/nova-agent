@@ -65,6 +65,15 @@ const WORKSPACE_GLOBAL = process.env.NANOCLAW_WORKSPACE_GLOBAL || '/workspace/gl
 const WORKSPACE_EXTRA = process.env.NANOCLAW_WORKSPACE_EXTRA || '/workspace/extra';
 const IPC_POLL_MS = 500;
 
+// Maximum character count for session transcript history.
+// When exceeded, old messages are trimmed to keep only the most recent context.
+const MAX_HISTORY_CHARS = parseInt(process.env.NOVA_MAX_HISTORY_CHARS || '50000', 10);
+
+const HISTORY_TRUNCATED_NOTE =
+  'NOTE: Conversation history has been truncated to save tokens. ' +
+  'Only the most recent messages are included. ' +
+  'Be concise and token-efficient in your responses.';
+
 /**
  * Push-based async iterable for streaming user messages to the SDK.
  * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
@@ -288,6 +297,92 @@ function generateFallbackName(): string {
   return `conversation-${time.getHours().toString().padStart(2, '0')}${time.getMinutes().toString().padStart(2, '0')}`;
 }
 
+/**
+ * Derive the Claude project directory slug from a working directory path.
+ * Claude converts the cwd to a slug by replacing all path separators with '-'.
+ * e.g. /data/groups/platform → -data-groups-platform
+ */
+function cwdToProjectSlug(cwd: string): string {
+  return cwd.replace(/\//g, '-');
+}
+
+/**
+ * Find the session transcript file for a given sessionId.
+ * Returns the path if found, null otherwise.
+ */
+function findSessionTranscript(sessionId: string, cwd: string): string | null {
+  // HOME is set to the parent of .claude/ by railway-runner
+  const homeDir = process.env.HOME || '/home/node';
+  const projectSlug = cwdToProjectSlug(cwd);
+  const transcriptPath = path.join(
+    homeDir,
+    '.claude',
+    'projects',
+    projectSlug,
+    `${sessionId}.jsonl`,
+  );
+  if (fs.existsSync(transcriptPath)) return transcriptPath;
+  return null;
+}
+
+/**
+ * Truncate session history if it exceeds MAX_HISTORY_CHARS.
+ * Keeps the first few lines (queue-operation enqueue) and as many recent
+ * lines as fit within the limit. Returns true if truncation was performed.
+ *
+ * Strategy:
+ *   - Parse all lines
+ *   - Keep the first line (initial queue-operation/enqueue with the original prompt) for context
+ *   - Walk backwards from the end, accumulating lines until we hit the char limit
+ *   - Write the trimmed file back
+ */
+function truncateSessionHistory(sessionId: string, cwd: string): boolean {
+  if (MAX_HISTORY_CHARS <= 0) return false;
+
+  const transcriptPath = findSessionTranscript(sessionId, cwd);
+  if (!transcriptPath) return false;
+
+  let content: string;
+  try {
+    content = fs.readFileSync(transcriptPath, 'utf-8');
+  } catch {
+    return false;
+  }
+
+  if (content.length <= MAX_HISTORY_CHARS) return false;
+
+  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  if (lines.length <= 2) return false; // Nothing meaningful to trim
+
+  // Keep the very first line (the initial prompt / queue-operation enqueue)
+  const firstLine = lines[0];
+  // Build the tail from the end, staying within budget
+  // Reserve space for the first line + newlines
+  const budget = MAX_HISTORY_CHARS - firstLine.length - 10;
+  const tail: string[] = [];
+  let used = 0;
+
+  for (let i = lines.length - 1; i >= 1; i--) {
+    const lineLen = lines[i].length + 1; // +1 for newline
+    if (used + lineLen > budget && tail.length > 0) break;
+    tail.unshift(lines[i]);
+    used += lineLen;
+  }
+
+  const truncated = [firstLine, ...tail].join('\n') + '\n';
+  try {
+    fs.writeFileSync(transcriptPath, truncated, 'utf-8');
+    log(
+      `History truncated: ${content.length} → ${truncated.length} chars ` +
+      `(kept ${tail.length + 1}/${lines.length} lines) for session ${sessionId}`,
+    );
+    return true;
+  } catch (err) {
+    log(`Failed to write truncated transcript: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 interface ParsedMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -488,6 +583,13 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Truncate session history if it has grown too large, to keep token costs down.
+  // Must happen before the query() call so the SDK reads the trimmed transcript.
+  let historyWasTruncated = false;
+  if (sessionId) {
+    historyWasTruncated = truncateSessionHistory(sessionId, WORKSPACE_GROUP);
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -504,6 +606,16 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Build system prompt append: combine truncation note (if any) with global CLAUDE.md
+  let systemPromptAppend: string | undefined;
+  if (historyWasTruncated && globalClaudeMd) {
+    systemPromptAppend = `${HISTORY_TRUNCATED_NOTE}\n\n${globalClaudeMd}`;
+  } else if (historyWasTruncated) {
+    systemPromptAppend = HISTORY_TRUNCATED_NOTE;
+  } else if (globalClaudeMd) {
+    systemPromptAppend = globalClaudeMd;
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -511,8 +623,8 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      systemPrompt: systemPromptAppend
+        ? { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend }
         : undefined,
       allowedTools: [
         'Bash',
