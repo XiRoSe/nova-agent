@@ -321,7 +321,7 @@ export class WhatsAppChannel implements Channel {
           // With shared number, bot messages carry the assistant name prefix
           // (even in DMs/self-chat) so we check for that.
           const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
+            ? (fromMe && this.sentMessageIds.has(msg.key.id || ''))
             : content.startsWith(`${ASSISTANT_NAME}:`);
 
           this.opts.onMessage(chatJid, {
@@ -357,7 +357,8 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { text: prefixed });
+      const sentResult = await this.sock.sendMessage(jid, { text: prefixed });
+      if (sentResult?.key?.id) this.sentMessageIds.add(sentResult.key.id);
       logger.info({ jid, length: prefixed.length }, 'Message sent');
     } catch (err) {
       // If send fails, queue it for retry on reconnect
