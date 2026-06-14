@@ -859,6 +859,27 @@ async function main(): Promise<void> {
       return;
     }
 
+
+    // Send a WhatsApp message to a specific JID
+    if (req.url === '/api/whatsapp/send' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('end', async () => {
+        try {
+          const { jid, text } = JSON.parse(body);
+          if (!jid || !text) { res.writeHead(400); res.end(JSON.stringify({ error: 'jid and text required' })); return; }
+          const waChannel = channels.find(ch => ch.name === 'whatsapp');
+          if (!waChannel) { res.writeHead(404); res.end(JSON.stringify({ error: 'WhatsApp channel not active' })); return; }
+          await waChannel.sendMessage(jid, text);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'sent' }));
+        } catch (err: any) {
+          res.writeHead(500); res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
     // ── PAPERCLIP MULTI-AGENT ENDPOINTS ──
 
     // POST /agents/:agentId/run — Paperclip heartbeat triggers this
