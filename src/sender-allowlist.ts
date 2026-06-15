@@ -19,8 +19,12 @@ export interface SenderAllowlistConfig {
   logDenied: boolean;
 }
 
+// Fail closed: when no config can be read, allow nobody by default. The owner
+// still triggers via the is-from-me bypass in shouldTrigger(), so the system is
+// never bricked — but a missing/corrupt config can never silently open the gate
+// to every sender. Grant access explicitly by listing JIDs in gating.json.
 const DEFAULT_CONFIG: SenderAllowlistConfig = {
-  default: { allow: '*', mode: 'trigger' },
+  default: { allow: [], mode: 'trigger' },
   chats: {},
   logDenied: true,
 };
@@ -177,14 +181,15 @@ export function shouldTrigger(
 }
 
 // Seed the gating config on the volume if it doesn't exist yet, so the file is
-// always present and explicit (no silent allow-all fallback) and immediately
-// editable at runtime. Seeds triggerRegex with the current built-in pattern.
+// always present and explicit (no silent fallback) and immediately editable at
+// runtime. Seeds allow=[] (nobody but the owner, who passes via the is-from-me
+// bypass) and triggerRegex with the current built-in pattern.
 export function ensureGatingConfig(pathOverride?: string): void {
   const filePath = pathOverride ?? GATING_CONFIG_PATH;
   if (fs.existsSync(filePath)) return;
   const seed: SenderAllowlistConfig = {
     default: {
-      allow: '*',
+      allow: [],
       mode: 'trigger',
       triggerRegex: TRIGGER_PATTERN.source,
     },

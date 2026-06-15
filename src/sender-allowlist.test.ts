@@ -34,9 +34,9 @@ afterEach(() => {
 });
 
 describe('loadSenderAllowlist', () => {
-  it('returns allow-all defaults when file is missing', () => {
+  it('returns deny-all (fail-closed) defaults when file is missing', () => {
     const cfg = loadSenderAllowlist(cfgPath());
-    expect(cfg.default.allow).toBe('*');
+    expect(cfg.default.allow).toEqual([]);
     expect(cfg.default.mode).toBe('trigger');
     expect(cfg.logDenied).toBe(true);
   });
@@ -81,17 +81,17 @@ describe('loadSenderAllowlist', () => {
     expect(cfg.chats['group-a'].mode).toBe('drop');
   });
 
-  it('returns allow-all on invalid JSON', () => {
+  it('returns deny-all on invalid JSON', () => {
     const p = cfgPath();
     fs.writeFileSync(p, '{ not valid json }}}');
     const cfg = loadSenderAllowlist(p);
-    expect(cfg.default.allow).toBe('*');
+    expect(cfg.default.allow).toEqual([]);
   });
 
-  it('returns allow-all on invalid schema', () => {
+  it('returns deny-all on invalid schema', () => {
     const p = writeConfig({ default: { oops: true } });
     const cfg = loadSenderAllowlist(p);
-    expect(cfg.default.allow).toBe('*');
+    expect(cfg.default.allow).toEqual([]);
   });
 
   it('rejects non-string allow array items', () => {
@@ -100,7 +100,7 @@ describe('loadSenderAllowlist', () => {
       chats: {},
     });
     const cfg = loadSenderAllowlist(p);
-    expect(cfg.default.allow).toBe('*'); // falls back to default
+    expect(cfg.default.allow).toEqual([]); // falls back to deny-all default
   });
 
   it('skips invalid per-chat entries', () => {
@@ -296,7 +296,7 @@ describe('ensureGatingConfig', () => {
     ensureGatingConfig(p);
     expect(fs.existsSync(p)).toBe(true);
     const cfg = loadSenderAllowlist(p);
-    expect(cfg.default.allow).toBe('*');
+    expect(cfg.default.allow).toEqual([]);
     expect(cfg.default.mode).toBe('trigger');
     expect(typeof cfg.default.triggerRegex).toBe('string');
   });
