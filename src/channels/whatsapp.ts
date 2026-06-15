@@ -317,6 +317,23 @@ export class WhatsAppChannel implements Channel {
           const senderName = msg.pushName || sender.split('@')[0];
 
           const fromMe = msg.key.fromMe || false;
+
+          // Owner-only filter for group chats: only process messages from the
+          // owner's phone number (WHATSAPP_PHONE). Silently ignore messages from
+          // anyone else in group chats so they cannot trigger Nova responses.
+          // DM chats (@s.whatsapp.net) and bot's own messages are always allowed.
+          if (!fromMe && isGroup && process.env.WHATSAPP_PHONE) {
+            const ownerPhone = process.env.WHATSAPP_PHONE.replace(/^\+/, '');
+            const senderPhone = sender.split('@')[0];
+            if (senderPhone !== ownerPhone) {
+              logger.debug(
+                { sender, ownerPhone },
+                'WhatsApp group message ignored: sender is not the owner',
+              );
+              continue;
+            }
+          }
+
           // Detect bot messages: with own number, fromMe is reliable
           // since only the bot sends from that number.
           // With shared number, bot messages carry the assistant name prefix
