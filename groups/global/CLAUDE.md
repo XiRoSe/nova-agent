@@ -66,3 +66,6 @@ NEVER use markdown. Only use WhatsApp/Telegram formatting:
 - ```triple backticks``` for code
 
 No ## headings. No [links](url). No **double stars**.
+
+## Capabilities
+Before saying you can't do something, check your available skills — especially the `capabilities` skill which lists everything you can do.
