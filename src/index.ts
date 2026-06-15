@@ -231,8 +231,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  // For non-main groups, the gating config decides whether to wake the agent
+  // (trigger regex + sender allowlist, per gating.json). Main group bypasses.
+  if (!isMainGroup) {
     const gatingCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some((m) =>
       shouldTrigger(chatJid, m.sender, m.content, m.is_from_me, gatingCfg),
@@ -566,12 +567,11 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
-          // For non-main groups, only act on trigger messages.
-          // Non-trigger messages accumulate in DB and get pulled as
-          // context when a trigger eventually arrives.
-          if (needsTrigger) {
+          // For non-main groups, the gating config (gating.json) decides whether
+          // to wake the agent. Non-matching messages still accumulate in the DB
+          // and get pulled as context when a triggering message arrives.
+          if (!isMainGroup) {
             const gatingCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some((m) =>
               shouldTrigger(
@@ -822,7 +822,6 @@ async function main(): Promise<void> {
             folder: folderName,
             trigger: `@${ASSISTANT_NAME}`,
             added_at: new Date().toISOString(),
-            requiresTrigger: !isSoloChat,
           });
           logger.info(
             { jid: chatJid, name, folder: folderName, solo: isSoloChat },
@@ -883,7 +882,6 @@ async function main(): Promise<void> {
       trigger: `@${ASSISTANT_NAME}`,
       added_at: new Date().toISOString(),
       isMain: true,
-      requiresTrigger: false,
     });
     logger.info('Registered platform group for HTTP API');
   }
@@ -1387,7 +1385,6 @@ async function main(): Promise<void> {
         trigger: `@${ASSISTANT_NAME}`,
         added_at: new Date().toISOString(),
         isMain: true,
-        requiresTrigger: false,
       });
       logger.info(
         { jid: mainJid, name: mainName },
@@ -1430,7 +1427,6 @@ async function main(): Promise<void> {
           folder: folderName,
           trigger: `@${ASSISTANT_NAME}`,
           added_at: new Date().toISOString(),
-          requiresTrigger: !isSoloChat,
         });
         logger.info(
           { jid: chat.jid, name: chat.name, folder: folderName },

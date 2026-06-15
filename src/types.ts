@@ -38,8 +38,7 @@ export interface RegisteredGroup {
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean; // Default: true for groups, false for solo chats
-  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  isMain?: boolean; // True for the main control group (bypasses gating, elevated privileges)
 }
 
 export interface NewMessage {

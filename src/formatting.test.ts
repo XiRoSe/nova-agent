@@ -7,6 +7,10 @@ import {
   formatOutbound,
   stripInternalTags,
 } from './router.js';
+import {
+  shouldTrigger,
+  SenderAllowlistConfig,
+} from './sender-allowlist.js';
 import { NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
@@ -203,54 +207,69 @@ describe('formatOutbound', () => {
   });
 });
 
-// --- Trigger gating with requiresTrigger flag ---
+// --- Trigger gating (isMain bypass + gating config) ---
 
-describe('trigger gating (requiresTrigger interaction)', () => {
-  // Replicates the exact logic from processGroupMessages and startMessageLoop:
-  //   if (!isMainGroup && group.requiresTrigger !== false) { check trigger }
-  function shouldRequireTrigger(
-    isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
-  ): boolean {
-    return !isMainGroup && requiresTrigger !== false;
-  }
-
+describe('trigger gating (isMain bypass + gating config)', () => {
+  // New model: the main group bypasses gating entirely; non-main groups are
+  // decided by shouldTrigger() from gating.json. requires_trigger is gone.
   function shouldProcess(
     isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
+    cfg: SenderAllowlistConfig,
     messages: NewMessage[],
   ): boolean {
-    if (!shouldRequireTrigger(isMainGroup, requiresTrigger)) return true;
-    return messages.some((m) => TRIGGER_PATTERN.test(m.content.trim()));
+    if (isMainGroup) return true;
+    return messages.some((m) =>
+      shouldTrigger('g@g.us', m.sender, m.content, m.is_from_me, cfg),
+    );
   }
 
-  it('main group always processes (no trigger needed)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(true, undefined, msgs)).toBe(true);
+  const triggerMode: SenderAllowlistConfig = {
+    default: { allow: '*', mode: 'trigger', triggerRegex: TRIGGER_PATTERN.source },
+    chats: {},
+    logDenied: false,
+  };
+  const alwaysMode: SenderAllowlistConfig = {
+    default: { allow: '*', mode: 'always' },
+    chats: {},
+    logDenied: false,
+  };
+  const dropMode: SenderAllowlistConfig = {
+    default: { allow: '*', mode: 'drop' },
+    chats: {},
+    logDenied: false,
+  };
+
+  it('main group always processes (gating bypassed)', () => {
+    expect(
+      shouldProcess(true, triggerMode, [makeMsg({ content: 'no trigger' })]),
+    ).toBe(true);
   });
 
-  it('main group processes even with requiresTrigger=true', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(true, true, msgs)).toBe(true);
+  it('non-main trigger mode: ignores messages without the trigger', () => {
+    expect(
+      shouldProcess(false, triggerMode, [makeMsg({ content: 'no trigger' })]),
+    ).toBe(false);
   });
 
-  it('non-main group with requiresTrigger=undefined requires trigger (defaults to true)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, undefined, msgs)).toBe(false);
+  it('non-main trigger mode: processes when the trigger is present', () => {
+    expect(
+      shouldProcess(false, triggerMode, [
+        makeMsg({ content: `@${ASSISTANT_NAME} do something` }),
+      ]),
+    ).toBe(true);
   });
 
-  it('non-main group with requiresTrigger=true requires trigger', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, true, msgs)).toBe(false);
+  it('non-main always mode: processes without a trigger', () => {
+    expect(
+      shouldProcess(false, alwaysMode, [makeMsg({ content: 'no trigger' })]),
+    ).toBe(true);
   });
 
-  it('non-main group with requiresTrigger=true processes when trigger present', () => {
-    const msgs = [makeMsg({ content: `@${ASSISTANT_NAME} do something` })];
-    expect(shouldProcess(false, true, msgs)).toBe(true);
-  });
-
-  it('non-main group with requiresTrigger=false always processes (no trigger needed)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, false, msgs)).toBe(true);
+  it('non-main drop mode: never processes, even with the trigger', () => {
+    expect(
+      shouldProcess(false, dropMode, [
+        makeMsg({ content: `@${ASSISTANT_NAME} go` }),
+      ]),
+    ).toBe(false);
   });
 });

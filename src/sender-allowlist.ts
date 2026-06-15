@@ -6,7 +6,10 @@ import { logger } from './logger.js';
 
 export interface ChatAllowlistEntry {
   allow: '*' | string[];
-  mode: 'trigger' | 'drop';
+  // 'trigger' (default): the triggerRegex must match to wake the agent.
+  // 'always': any message from an allowed sender wakes the agent (no regex).
+  // 'drop': the chat is ignored entirely.
+  mode: 'trigger' | 'always' | 'drop';
   // Optional per-chat trigger regex (source string, matched case-insensitively
   // against the trimmed message text). When omitted or invalid, the built-in
   // TRIGGER_PATTERN (derived from ASSISTANT_NAME) is used instead.
@@ -35,7 +38,8 @@ function isValidEntry(entry: unknown): entry is ChatAllowlistEntry {
   const validAllow =
     e.allow === '*' ||
     (Array.isArray(e.allow) && e.allow.every((v) => typeof v === 'string'));
-  const validMode = e.mode === 'trigger' || e.mode === 'drop';
+  const validMode =
+    e.mode === 'trigger' || e.mode === 'always' || e.mode === 'drop';
   const validRegex =
     e.triggerRegex === undefined || typeof e.triggerRegex === 'string';
   return validAllow && validMode && validRegex;
@@ -175,7 +179,9 @@ export function shouldTrigger(
 ): boolean {
   const entry = getEntry(chatJid, cfg);
   if (entry.mode === 'drop') return false;
-  if (!getTriggerRegex(entry).test(content.trim())) return false;
+  // 'always' mode skips the trigger regex; every other mode requires a match.
+  if (entry.mode !== 'always' && !getTriggerRegex(entry).test(content.trim()))
+    return false;
   if (isFromMe) return true;
   return isTriggerAllowed(chatJid, sender, cfg);
 }

@@ -17,7 +17,6 @@ export interface RegisteredGroupData {
   folder: string;
   trigger: string;
   added_at: string;
-  requiresTrigger?: boolean;
   isMain?: boolean;
 }
 
