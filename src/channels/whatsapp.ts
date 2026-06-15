@@ -19,7 +19,12 @@ import {
   IS_RAILWAY,
   STORE_DIR,
 } from '../config.js';
-import { getLastGroupSync, setLastGroupSync, storeMessage, updateChatName } from '../db.js';
+import {
+  getLastGroupSync,
+  setLastGroupSync,
+  storeMessage,
+  updateChatName,
+} from '../db.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -66,7 +71,9 @@ export class WhatsAppChannel implements Channel {
   async retryPairing(): Promise<void> {
     this.pairingGaveUp = false;
     this.qrAttempts = 0;
-    try { this.sock?.end(undefined); } catch {}
+    try {
+      this.sock?.end(undefined);
+    } catch {}
     await new Promise((r) => setTimeout(r, 1000));
     this.connectInternal().catch((err) => {
       logger.error({ err }, 'WhatsApp retry pairing failed');
@@ -114,11 +121,14 @@ export class WhatsAppChannel implements Channel {
             `WhatsApp pairing code: ${code} — enter this in WhatsApp > Linked Devices > Link with phone number`,
           );
           // Push to Nova notification system so the platform chat shows it
-          import('../notifications.js').then(({ pushNotification }) => {
-            pushNotification('action',
-              `WhatsApp pairing code: **${code}**\n\nOpen WhatsApp → Settings → Linked Devices → Link with phone number → Enter code: ${code}`);
-          }).catch(() => {});
-
+          import('../notifications.js')
+            .then(({ pushNotification }) => {
+              pushNotification(
+                'action',
+                `WhatsApp pairing code: **${code}**\n\nOpen WhatsApp → Settings → Linked Devices → Link with phone number → Enter code: ${code}`,
+              );
+            })
+            .catch(() => {});
         } catch (err) {
           logger.error({ err }, 'Failed to request pairing code');
         }
@@ -135,12 +145,20 @@ export class WhatsAppChannel implements Channel {
           this.qrAttempts += 1;
           if (this.qrAttempts >= 3) {
             this.pairingGaveUp = true;
-            logger.warn('WhatsApp pairing gave up after 3 attempts. Agent stays online.');
-            import('../notifications.js').then(({ pushNotification }) => {
-              pushNotification('error',
-                'WhatsApp pairing timed out after 3 attempts. Say "connect WhatsApp" when you are ready to try again.');
-            }).catch(() => {});
-            try { this.sock?.end(undefined); } catch {}
+            logger.warn(
+              'WhatsApp pairing gave up after 3 attempts. Agent stays online.',
+            );
+            import('../notifications.js')
+              .then(({ pushNotification }) => {
+                pushNotification(
+                  'error',
+                  'WhatsApp pairing timed out after 3 attempts. Say "connect WhatsApp" when you are ready to try again.',
+                );
+              })
+              .catch(() => {});
+            try {
+              this.sock?.end(undefined);
+            } catch {}
             return;
           }
           logger.info(
@@ -294,10 +312,15 @@ export class WhatsAppChannel implements Channel {
           // Download and save incoming images
           if (normalized.imageMessage) {
             try {
-              const stream = await downloadMediaMessage(msg, 'buffer', {}, {
-                logger: logger as any,
-                reuploadRequest: this.sock.updateMediaMessage,
-              });
+              const stream = await downloadMediaMessage(
+                msg,
+                'buffer',
+                {},
+                {
+                  logger: logger as any,
+                  reuploadRequest: this.sock.updateMediaMessage,
+                },
+              );
               const imgBuffer = stream as Buffer;
               const imgId = `recv-${Date.now()}`;
               const mediaDir = path.join(STORE_DIR, 'media');
@@ -305,7 +328,10 @@ export class WhatsAppChannel implements Channel {
               fs.writeFileSync(path.join(mediaDir, `${imgId}.jpg`), imgBuffer);
               content = `[image:${imgId}.jpg]${content ? ' ' + content : ''}`;
             } catch (imgErr) {
-              logger.warn({ imgErr }, 'Failed to download incoming WhatsApp image');
+              logger.warn(
+                { imgErr },
+                'Failed to download incoming WhatsApp image',
+              );
               if (!content) content = '[Image attachment]';
             }
           }
@@ -318,28 +344,17 @@ export class WhatsAppChannel implements Channel {
 
           const fromMe = msg.key.fromMe || false;
 
-          // Owner-only filter for group chats: only process messages from the
-          // owner's phone number (WHATSAPP_PHONE). Silently ignore messages from
-          // anyone else in group chats so they cannot trigger Nova responses.
-          // DM chats (@s.whatsapp.net) and bot's own messages are always allowed.
-          if (!fromMe && isGroup && process.env.WHATSAPP_PHONE) {
-            const ownerPhone = process.env.WHATSAPP_PHONE.replace(/^\+/, '');
-            const senderPhone = sender.split('@')[0];
-            if (senderPhone !== ownerPhone) {
-              logger.debug(
-                { sender, ownerPhone },
-                'WhatsApp group message ignored: sender is not the owner',
-              );
-              continue;
-            }
-          }
+          // Trigger/sender gating (regex + per-user allowlist) is enforced
+          // centrally and config-driven in the host loop via shouldTrigger()
+          // — see src/sender-allowlist.ts. Messages are stored as context here
+          // regardless of sender; only the gate decides what wakes the agent.
 
           // Detect bot messages: with own number, fromMe is reliable
           // since only the bot sends from that number.
           // With shared number, bot messages carry the assistant name prefix
           // (even in DMs/self-chat) so we check for that.
           const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? (fromMe && this.sentMessageIds.has(msg.key.id || ''))
+            ? fromMe && this.sentMessageIds.has(msg.key.id || '')
             : content.startsWith(`${ASSISTANT_NAME}:`);
 
           this.opts.onMessage(chatJid, {
@@ -388,15 +403,29 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
-  async sendImage(jid: string, imageBase64: string, mimeType: string, caption?: string): Promise<void> {
+  async sendImage(
+    jid: string,
+    imageBase64: string,
+    mimeType: string,
+    caption?: string,
+  ): Promise<void> {
     if (!this.connected) {
       logger.warn({ jid }, 'WA disconnected, image not sent');
       return;
     }
     try {
       const imgBuffer = Buffer.from(imageBase64, 'base64');
-      const sendPromise = this.sock.sendMessage(jid, { image: imgBuffer, mimetype: mimeType, caption: caption || '' });
-      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image send timeout after 30s')), 30000));
+      const sendPromise = this.sock.sendMessage(jid, {
+        image: imgBuffer,
+        mimetype: mimeType,
+        caption: caption || '',
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Image send timeout after 30s')),
+          30000,
+        ),
+      );
       await Promise.race([sendPromise, timeoutPromise]);
       // Save copy for web chat history
       const imgId = `sent-${Date.now()}`;
@@ -421,14 +450,26 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
-  async sendImageUrl(jid: string, imageUrl: string, caption?: string): Promise<void> {
+  async sendImageUrl(
+    jid: string,
+    imageUrl: string,
+    caption?: string,
+  ): Promise<void> {
     if (!this.connected) {
       logger.warn({ jid }, 'WA disconnected, image URL not sent');
       return;
     }
     try {
-      const sendPromise = this.sock.sendMessage(jid, { image: { url: imageUrl }, caption: caption || '' });
-      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Image URL send timeout after 30s')), 30000));
+      const sendPromise = this.sock.sendMessage(jid, {
+        image: { url: imageUrl },
+        caption: caption || '',
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Image URL send timeout after 30s')),
+          30000,
+        ),
+      );
       await Promise.race([sendPromise, timeoutPromise]);
       // Save copy for web chat history
       try {
@@ -587,7 +628,9 @@ registerChannel('whatsapp', (opts: ChannelOpts) => {
     if (!hasPhone) {
       // Clear stale auth state if it exists (prevents reconnection with old creds)
       if (hasAuthState) {
-        logger.info('WhatsApp: WHATSAPP_PHONE removed — clearing stale auth state');
+        logger.info(
+          'WhatsApp: WHATSAPP_PHONE removed — clearing stale auth state',
+        );
         fs.rmSync(authDir, { recursive: true, force: true });
       } else {
         logger.warn('WhatsApp: WHATSAPP_PHONE not set — skipping');

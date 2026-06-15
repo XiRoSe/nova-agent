@@ -13,7 +13,6 @@ import {
   SLACK_MAIN_CHANNEL_ID,
   STORE_DIR,
   TIMEZONE,
-  TRIGGER_PATTERN,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -73,10 +72,11 @@ import {
   stopRemoteControl,
 } from './remote-control.js';
 import {
+  ensureGatingConfig,
   isSenderAllowed,
-  isTriggerAllowed,
   loadSenderAllowlist,
   shouldDropMessage,
+  shouldTrigger,
 } from './sender-allowlist.js';
 import { syncMcpOnStartup } from './mcp-installer.js';
 import { syncSkillsOnStartup } from './skill-installer.js';
@@ -201,7 +201,10 @@ const TRIM_NOTE =
   '[CONTEXT TRIMMED — only the most recent messages are shown to save tokens. ' +
   'Be concise: skip preambles, avoid repeating what was already said, answer directly.]\n';
 
-const MAX_PROMPT_CHARS = parseInt(process.env.NOVA_MAX_PROMPT_CHARS || '8000', 10);
+const MAX_PROMPT_CHARS = parseInt(
+  process.env.NOVA_MAX_PROMPT_CHARS || '8000',
+  10,
+);
 
 /**
  * Process all pending messages for a group.
@@ -230,11 +233,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
-      (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+    const gatingCfg = loadSenderAllowlist();
+    const hasTrigger = missedMessages.some((m) =>
+      shouldTrigger(chatJid, m.sender, m.content, m.is_from_me, gatingCfg),
     );
     if (!hasTrigger) return true;
   }
@@ -252,7 +253,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ).slice(-5);
     prompt = formatThreadWithContext(threadMsgs, recent);
   } else {
-    const { messages: trimmed, trimmed: wasTrimmed } = trimToCharLimit(missedMessages, MAX_PROMPT_CHARS);
+    const { messages: trimmed, trimmed: wasTrimmed } = trimToCharLimit(
+      missedMessages,
+      MAX_PROMPT_CHARS,
+    );
     prompt = (wasTrimmed ? TRIM_NOTE : '') + formatMessages(trimmed, TIMEZONE);
   }
 
@@ -568,12 +572,15 @@ async function startMessageLoop(): Promise<void> {
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const allowlistCfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
-              (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
-                (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+            const gatingCfg = loadSenderAllowlist();
+            const hasTrigger = groupMessages.some((m) =>
+              shouldTrigger(
+                chatJid,
+                m.sender,
+                m.content,
+                m.is_from_me,
+                gatingCfg,
+              ),
             );
             if (!hasTrigger) continue;
           }
@@ -600,8 +607,11 @@ async function startMessageLoop(): Promise<void> {
               ASSISTANT_NAME,
             );
             messagesToSend = allPending.length > 0 ? allPending : groupMessages;
-            const { messages: trimmedPipe, trimmed: pipeTrimmed } = trimToCharLimit(messagesToSend, MAX_PROMPT_CHARS);
-            formatted = (pipeTrimmed ? TRIM_NOTE : '') + formatMessages(trimmedPipe, TIMEZONE);
+            const { messages: trimmedPipe, trimmed: pipeTrimmed } =
+              trimToCharLimit(messagesToSend, MAX_PROMPT_CHARS);
+            formatted =
+              (pipeTrimmed ? TRIM_NOTE : '') +
+              formatMessages(trimmedPipe, TIMEZONE);
           }
 
           if (queue.sendMessage(chatJid, formatted)) {
@@ -674,6 +684,7 @@ async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
+  ensureGatingConfig();
   loadState();
   restoreRemoteControl();
 
@@ -803,7 +814,8 @@ async function main(): Promise<void> {
             .toLowerCase()
             .slice(0, 50);
           const folderName = `${prefix}_${safeName}`;
-          const isSoloChat = chatJid.includes('@s.whatsapp.net') ||
+          const isSoloChat =
+            chatJid.includes('@s.whatsapp.net') ||
             (chatJid.startsWith('tg:') && !isGroup);
           registerGroup(chatJid, {
             name,
@@ -825,7 +837,8 @@ async function main(): Promise<void> {
   // ── Platform setup (BEFORE channel connections) ──────────────────
   // Platform responses — filled by the platform channel's sendMessage
   const platformResponses: string[] = [];
-  const { pushNotification, getAndClearNotifications, getNotifications } = await import('./notifications.js');
+  const { pushNotification, getAndClearNotifications, getNotifications } =
+    await import('./notifications.js');
   const PLATFORM_JID = 'platform:nova';
   const PLATFORM_PORT = parseInt(process.env.PORT || '3000', 10);
   let agentReady = false;
@@ -856,7 +869,13 @@ async function main(): Promise<void> {
   channels.push(platformChannel);
 
   // Register platform group
-  storeChatMetadata(PLATFORM_JID, new Date().toISOString(), 'Nova Platform', 'platform', false);
+  storeChatMetadata(
+    PLATFORM_JID,
+    new Date().toISOString(),
+    'Nova Platform',
+    'platform',
+    false,
+  );
   if (!registeredGroups[PLATFORM_JID]) {
     registerGroup(PLATFORM_JID, {
       name: 'Nova Platform',
@@ -874,38 +893,63 @@ async function main(): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     // Retry WhatsApp pairing without redeploying
     if (req.url === '/api/retry-whatsapp' && req.method === 'POST') {
-      const waChannel = channels.find(ch => ch.name === 'whatsapp');
+      const waChannel = channels.find((ch) => ch.name === 'whatsapp');
       if (waChannel && 'retryPairing' in waChannel) {
         (waChannel as any).retryPairing();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'retrying', message: 'WhatsApp pairing restarted. Code will appear in notifications.' }));
+        res.end(
+          JSON.stringify({
+            status: 'retrying',
+            message:
+              'WhatsApp pairing restarted. Code will appear in notifications.',
+          }),
+        );
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'WhatsApp channel not active. Set WHATSAPP_PHONE and redeploy first.' }));
+        res.end(
+          JSON.stringify({
+            error:
+              'WhatsApp channel not active. Set WHATSAPP_PHONE and redeploy first.',
+          }),
+        );
       }
       return;
     }
 
-
     // Send a WhatsApp message to a specific JID
     if (req.url === '/api/whatsapp/send' && req.method === 'POST') {
       let body = '';
-      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('data', (chunk: string) => {
+        body += chunk;
+      });
       req.on('end', async () => {
         try {
           const { jid, text } = JSON.parse(body);
-          if (!jid || !text) { res.writeHead(400); res.end(JSON.stringify({ error: 'jid and text required' })); return; }
-          const waChannel = channels.find(ch => ch.name === 'whatsapp');
-          if (!waChannel) { res.writeHead(404); res.end(JSON.stringify({ error: 'WhatsApp channel not active' })); return; }
+          if (!jid || !text) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'jid and text required' }));
+            return;
+          }
+          const waChannel = channels.find((ch) => ch.name === 'whatsapp');
+          if (!waChannel) {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'WhatsApp channel not active' }));
+            return;
+          }
           await waChannel.sendMessage(jid, text);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'sent' }));
         } catch (err: any) {
-          res.writeHead(500); res.end(JSON.stringify({ error: err.message }));
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: err.message }));
         }
       });
       return;
@@ -918,7 +962,9 @@ async function main(): Promise<void> {
     if (agentRunMatch && req.method === 'POST') {
       const agentId = agentRunMatch[1]!;
       let body = '';
-      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('data', (chunk: string) => {
+        body += chunk;
+      });
       req.on('end', async () => {
         try {
           const request = JSON.parse(body);
@@ -927,7 +973,8 @@ async function main(): Promise<void> {
             'Transfer-Encoding': 'chunked',
             'Cache-Control': 'no-cache',
           });
-          const { runAgentForPaperclip } = await import('./paperclip-runner.js');
+          const { runAgentForPaperclip } =
+            await import('./paperclip-runner.js');
           await runAgentForPaperclip(agentId, request, (line: string) => {
             res.write(line + '\n');
           });
@@ -961,8 +1008,15 @@ async function main(): Promise<void> {
     const agentFileMatch = req.url?.match(/^\/agents\/([^/]+)\/files\/(.+)$/);
     if (agentFileMatch && req.method === 'GET') {
       const { readAgentFile } = await import('./agent-config.js');
-      const content = await readAgentFile(agentFileMatch[1]!, decodeURIComponent(agentFileMatch[2]!));
-      if (content === null) { res.writeHead(404); res.end(); return; }
+      const content = await readAgentFile(
+        agentFileMatch[1]!,
+        decodeURIComponent(agentFileMatch[2]!),
+      );
+      if (content === null) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end(content);
       return;
@@ -976,13 +1030,15 @@ async function main(): Promise<void> {
         if (ch.isConnected?.()) connectedChannels.push(ch.name);
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'ok',
-        agent: ASSISTANT_NAME,
-        ready: agentReady,
-        channels: connectedChannels,
-        notifications: getNotifications(),
-      }));
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          agent: ASSISTANT_NAME,
+          ready: agentReady,
+          channels: connectedChannels,
+          notifications: getNotifications(),
+        }),
+      );
       return;
     }
 
@@ -996,7 +1052,9 @@ async function main(): Promise<void> {
     if (req.url?.startsWith('/api/usage') && req.method === 'GET') {
       try {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ...getUsageSummary(), recent: getRecentUsage(40) }));
+        res.end(
+          JSON.stringify({ ...getUsageSummary(), recent: getRecentUsage(40) }),
+        );
       } catch (err) {
         logger.error({ err }, 'Usage API error');
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1020,12 +1078,18 @@ async function main(): Promise<void> {
 
     if (req.url?.startsWith('/api/history') && req.method === 'GET') {
       try {
-        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const url = new URL(
+          req.url,
+          `http://${req.headers.host || 'localhost'}`,
+        );
         const limitParam = url.searchParams.get('limit');
         const channelParam = url.searchParams.get('channel');
 
-        const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 100)) : 100;
-        const channelJid = channelParam && channelParam !== 'all' ? channelParam : undefined;
+        const limit = limitParam
+          ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 100))
+          : 100;
+        const channelJid =
+          channelParam && channelParam !== 'all' ? channelParam : undefined;
 
         const rows = getAllMessages(limit, channelJid);
 
@@ -1065,8 +1129,12 @@ async function main(): Promise<void> {
     // Live message stream — returns messages newer than ?since=<ISO timestamp>
     if (req.url?.startsWith('/api/live-messages') && req.method === 'GET') {
       try {
-        const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        const since = url.searchParams.get('since') || new Date(0).toISOString();
+        const url = new URL(
+          req.url,
+          `http://${req.headers.host || 'localhost'}`,
+        );
+        const since =
+          url.searchParams.get('since') || new Date(0).toISOString();
 
         function deriveChannel(chatJid: string): string {
           if (chatJid.startsWith('platform:')) return 'platform';
@@ -1106,7 +1174,9 @@ async function main(): Promise<void> {
       const filename = decodeURIComponent(req.url.slice('/api/media/'.length));
       // Security: prevent path traversal
       if (filename.includes('..') || filename.includes('/')) {
-        res.writeHead(403); res.end(); return;
+        res.writeHead(403);
+        res.end();
+        return;
       }
       // Search common media locations
       const searchPaths = [
@@ -1125,8 +1195,12 @@ async function main(): Promise<void> {
         if (fs.existsSync(filePath)) {
           const ext = path.extname(filePath).toLowerCase();
           const mimeTypes: Record<string, string> = {
-            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-            '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.svg': 'image/svg+xml',
           };
           res.writeHead(200, {
             'Content-Type': mimeTypes[ext] || 'application/octet-stream',
@@ -1136,13 +1210,16 @@ async function main(): Promise<void> {
           return;
         }
       }
-      res.writeHead(404); res.end();
+      res.writeHead(404);
+      res.end();
       return;
     }
 
     if (req.url === '/api/chat' && req.method === 'POST') {
       let body = '';
-      req.on('data', (chunk: string) => { body += chunk; });
+      req.on('data', (chunk: string) => {
+        body += chunk;
+      });
       req.on('end', async () => {
         try {
           const { message } = JSON.parse(body);
@@ -1155,9 +1232,10 @@ async function main(): Promise<void> {
           if (!agentReady) {
             // Not fully started yet — return any pending notifications
             const notifs = getNotifications();
-            const msg = notifs.length > 0
-              ? notifs.map((n: { message: string }) => n.message).join('\n\n')
-              : 'Agent is starting up. Will be ready shortly.';
+            const msg =
+              notifs.length > 0
+                ? notifs.map((n: { message: string }) => n.message).join('\n\n')
+                : 'Agent is starting up. Will be ready shortly.';
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ response: msg }));
             return;
@@ -1192,9 +1270,12 @@ async function main(): Promise<void> {
           }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            response: responseText || 'Agent is still processing. Try again shortly.',
-          }));
+          res.end(
+            JSON.stringify({
+              response:
+                responseText || 'Agent is still processing. Try again shortly.',
+            }),
+          );
         } catch (err) {
           logger.error({ err }, 'Platform API chat error');
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -1220,7 +1301,10 @@ async function main(): Promise<void> {
     const factory = getChannelFactory(channelName)!;
     const testChannel = factory(channelOpts);
     if (!testChannel) {
-      logger.warn({ channel: channelName }, 'Channel credentials missing — skipping.');
+      logger.warn(
+        { channel: channelName },
+        'Channel credentials missing — skipping.',
+      );
       continue;
     }
     // Don't keep the test channel — we'll create it inside the worker
@@ -1235,13 +1319,22 @@ async function main(): Promise<void> {
     channels.push(proxy);
 
     // Connect in background via worker thread — never blocks main thread
-    proxy.connect().then(() => {
-      logger.info({ channel: channelName }, 'Channel worker connected');
-      pushNotification('info', `${channelName} connected`);
-    }).catch((err: Error) => {
-      logger.error({ channel: channelName, err }, 'Channel worker connection failed');
-      pushNotification('error', `${channelName} connection failed: ${err.message || 'unknown error'}`);
-    });
+    proxy
+      .connect()
+      .then(() => {
+        logger.info({ channel: channelName }, 'Channel worker connected');
+        pushNotification('info', `${channelName} connected`);
+      })
+      .catch((err: Error) => {
+        logger.error(
+          { channel: channelName, err },
+          'Channel worker connection failed',
+        );
+        pushNotification(
+          'error',
+          `${channelName} connection failed: ${err.message || 'unknown error'}`,
+        );
+      });
   }
 
   // Auto-register main group (zero-config Railway deploy).
@@ -1329,7 +1422,8 @@ async function main(): Promise<void> {
         const folderName = `${prefix}_${safeName}`;
         // Solo chats (DMs) don't require trigger — respond to everything
         // Group chats require @mention to avoid noise
-        const isSoloChat = chat.jid.includes('@s.whatsapp.net') ||
+        const isSoloChat =
+          chat.jid.includes('@s.whatsapp.net') ||
           (chat.jid.startsWith('tg:') && !chat.is_group);
         registerGroup(chat.jid, {
           name: chat.name,
@@ -1372,8 +1466,19 @@ async function main(): Promise<void> {
     sendImage: (jid, imageBase64, mimeType, caption) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      if (typeof (channel as { sendImage?: unknown }).sendImage === 'function') {
-        return (channel as unknown as { sendImage: (jid: string, imageBase64: string, mimeType: string, caption?: string) => Promise<void> }).sendImage(jid, imageBase64, mimeType, caption);
+      if (
+        typeof (channel as { sendImage?: unknown }).sendImage === 'function'
+      ) {
+        return (
+          channel as unknown as {
+            sendImage: (
+              jid: string,
+              imageBase64: string,
+              mimeType: string,
+              caption?: string,
+            ) => Promise<void>;
+          }
+        ).sendImage(jid, imageBase64, mimeType, caption);
       }
       logger.warn({ jid }, 'Channel does not support sendImage');
       return Promise.resolve();
@@ -1381,8 +1486,19 @@ async function main(): Promise<void> {
     sendImageUrl: (jid, imageUrl, caption) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      if (typeof (channel as { sendImageUrl?: unknown }).sendImageUrl === 'function') {
-        return (channel as unknown as { sendImageUrl: (jid: string, imageUrl: string, caption?: string) => Promise<void> }).sendImageUrl(jid, imageUrl, caption);
+      if (
+        typeof (channel as { sendImageUrl?: unknown }).sendImageUrl ===
+        'function'
+      ) {
+        return (
+          channel as unknown as {
+            sendImageUrl: (
+              jid: string,
+              imageUrl: string,
+              caption?: string,
+            ) => Promise<void>;
+          }
+        ).sendImageUrl(jid, imageUrl, caption);
       }
       logger.warn({ jid }, 'Channel does not support sendImageUrl');
       return Promise.resolve();
@@ -1390,8 +1506,19 @@ async function main(): Promise<void> {
     sendAudio: (jid, audioBase64, mimeType, caption) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      if (typeof (channel as { sendAudio?: unknown }).sendAudio === 'function') {
-        return (channel as unknown as { sendAudio: (jid: string, audioBase64: string, mimeType: string, caption?: string) => Promise<void> }).sendAudio(jid, audioBase64, mimeType, caption);
+      if (
+        typeof (channel as { sendAudio?: unknown }).sendAudio === 'function'
+      ) {
+        return (
+          channel as unknown as {
+            sendAudio: (
+              jid: string,
+              audioBase64: string,
+              mimeType: string,
+              caption?: string,
+            ) => Promise<void>;
+          }
+        ).sendAudio(jid, audioBase64, mimeType, caption);
       }
       logger.warn({ jid }, 'Channel does not support sendAudio');
       return Promise.resolve();

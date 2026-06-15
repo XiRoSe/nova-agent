@@ -4,11 +4,13 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ensureGatingConfig,
   isSenderAllowed,
   isTriggerAllowed,
   loadSenderAllowlist,
   SenderAllowlistConfig,
   shouldDropMessage,
+  shouldTrigger,
 } from './sender-allowlist.js';
 
 let tmpDir: string;
@@ -212,5 +214,100 @@ describe('isTriggerAllowed', () => {
     };
     isTriggerAllowed('g1', 'eve', cfg);
     // Logger.debug is called — we just verify no crash; logger is a real pino instance
+  });
+});
+
+describe('shouldTrigger', () => {
+  const base: SenderAllowlistConfig = {
+    default: { allow: '*', mode: 'trigger', triggerRegex: '^@Nova\\b' },
+    chats: {},
+    logDenied: false,
+  };
+
+  it('triggers when regex matches and sender allowed', () => {
+    expect(shouldTrigger('g1', 'alice', '@Nova hello', false, base)).toBe(true);
+  });
+
+  it('does not trigger when regex does not match', () => {
+    expect(shouldTrigger('g1', 'alice', 'just chatting', false, base)).toBe(
+      false,
+    );
+  });
+
+  it('matches case-insensitively and after trimming', () => {
+    expect(shouldTrigger('g1', 'alice', '  @nova hey', false, base)).toBe(true);
+  });
+
+  it('denies a disallowed sender even when regex matches', () => {
+    const cfg: SenderAllowlistConfig = {
+      ...base,
+      default: { allow: ['alice'], mode: 'trigger', triggerRegex: '^@Nova\\b' },
+    };
+    expect(shouldTrigger('g1', 'eve', '@Nova hi', false, cfg)).toBe(false);
+    expect(shouldTrigger('g1', 'alice', '@Nova hi', false, cfg)).toBe(true);
+  });
+
+  it('own messages bypass the sender allowlist (but still need the regex)', () => {
+    const cfg: SenderAllowlistConfig = {
+      ...base,
+      default: { allow: ['alice'], mode: 'trigger', triggerRegex: '^@Nova\\b' },
+    };
+    expect(shouldTrigger('g1', 'eve', '@Nova hi', true, cfg)).toBe(true);
+    expect(shouldTrigger('g1', 'eve', 'no trigger', true, cfg)).toBe(false);
+  });
+
+  it('drop mode never triggers', () => {
+    const cfg: SenderAllowlistConfig = {
+      ...base,
+      default: { allow: '*', mode: 'drop', triggerRegex: '^@Nova\\b' },
+    };
+    expect(shouldTrigger('g1', 'alice', '@Nova hi', false, cfg)).toBe(false);
+  });
+
+  it('per-chat triggerRegex overrides the default', () => {
+    const cfg: SenderAllowlistConfig = {
+      default: { allow: '*', mode: 'trigger', triggerRegex: '^@Nova\\b' },
+      chats: {
+        g1: { allow: '*', mode: 'trigger', triggerRegex: '^!bot\\b' },
+      },
+      logDenied: false,
+    };
+    expect(shouldTrigger('g1', 'alice', '!bot do it', false, cfg)).toBe(true);
+    expect(shouldTrigger('g1', 'alice', '@Nova do it', false, cfg)).toBe(false);
+    // default chat still uses the default regex
+    expect(shouldTrigger('g2', 'alice', '@Nova do it', false, cfg)).toBe(true);
+  });
+
+  it('falls back to built-in pattern when triggerRegex is invalid', () => {
+    const cfg: SenderAllowlistConfig = {
+      default: { allow: '*', mode: 'trigger', triggerRegex: '([unclosed' },
+      chats: {},
+      logDenied: false,
+    };
+    // Invalid regex must not throw, and must not match arbitrary text.
+    expect(shouldTrigger('g1', 'alice', 'random text', false, cfg)).toBe(false);
+  });
+});
+
+describe('ensureGatingConfig', () => {
+  it('seeds a default config file when missing', () => {
+    const p = cfgPath('gating.json');
+    expect(fs.existsSync(p)).toBe(false);
+    ensureGatingConfig(p);
+    expect(fs.existsSync(p)).toBe(true);
+    const cfg = loadSenderAllowlist(p);
+    expect(cfg.default.allow).toBe('*');
+    expect(cfg.default.mode).toBe('trigger');
+    expect(typeof cfg.default.triggerRegex).toBe('string');
+  });
+
+  it('does not overwrite an existing config file', () => {
+    const p = writeConfig(
+      { default: { allow: ['alice'], mode: 'trigger' }, chats: {} },
+      'gating.json',
+    );
+    ensureGatingConfig(p);
+    const cfg = loadSenderAllowlist(p);
+    expect(cfg.default.allow).toEqual(['alice']);
   });
 });

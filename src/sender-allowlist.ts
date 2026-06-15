@@ -1,11 +1,16 @@
 import fs from 'fs';
+import path from 'path';
 
-import { SENDER_ALLOWLIST_PATH } from './config.js';
+import { GATING_CONFIG_PATH, TRIGGER_PATTERN } from './config.js';
 import { logger } from './logger.js';
 
 export interface ChatAllowlistEntry {
   allow: '*' | string[];
   mode: 'trigger' | 'drop';
+  // Optional per-chat trigger regex (source string, matched case-insensitively
+  // against the trimmed message text). When omitted or invalid, the built-in
+  // TRIGGER_PATTERN (derived from ASSISTANT_NAME) is used instead.
+  triggerRegex?: string;
 }
 
 export interface SenderAllowlistConfig {
@@ -27,13 +32,15 @@ function isValidEntry(entry: unknown): entry is ChatAllowlistEntry {
     e.allow === '*' ||
     (Array.isArray(e.allow) && e.allow.every((v) => typeof v === 'string'));
   const validMode = e.mode === 'trigger' || e.mode === 'drop';
-  return validAllow && validMode;
+  const validRegex =
+    e.triggerRegex === undefined || typeof e.triggerRegex === 'string';
+  return validAllow && validMode && validRegex;
 }
 
 export function loadSenderAllowlist(
   pathOverride?: string,
 ): SenderAllowlistConfig {
-  const filePath = pathOverride ?? SENDER_ALLOWLIST_PATH;
+  const filePath = pathOverride ?? GATING_CONFIG_PATH;
 
   let raw: string;
   try {
@@ -125,4 +132,70 @@ export function isTriggerAllowed(
     );
   }
   return allowed;
+}
+
+// Compiled-regex cache keyed by source string. Invalid sources resolve to the
+// built-in TRIGGER_PATTERN (logged once per distinct bad source) so a typo in
+// the config can never silently let everything through or block everything.
+const regexCache = new Map<string, RegExp>();
+
+function getTriggerRegex(entry: ChatAllowlistEntry): RegExp {
+  const src = entry.triggerRegex;
+  if (!src) return TRIGGER_PATTERN;
+  const cached = regexCache.get(src);
+  if (cached) return cached;
+  try {
+    const re = new RegExp(src, 'i');
+    regexCache.set(src, re);
+    return re;
+  } catch {
+    logger.warn(
+      { triggerRegex: src },
+      'gating: invalid triggerRegex, falling back to built-in TRIGGER_PATTERN',
+    );
+    regexCache.set(src, TRIGGER_PATTERN);
+    return TRIGGER_PATTERN;
+  }
+}
+
+// Single host-side gate: should this message wake the agent?
+// True iff the chat is not in 'drop' mode AND the trigger regex matches the
+// message text AND the sender is permitted (own messages always pass).
+// This is the only trigger decision — it is never delegated to the agent.
+export function shouldTrigger(
+  chatJid: string,
+  sender: string,
+  content: string,
+  isFromMe: boolean | undefined,
+  cfg: SenderAllowlistConfig,
+): boolean {
+  const entry = getEntry(chatJid, cfg);
+  if (entry.mode === 'drop') return false;
+  if (!getTriggerRegex(entry).test(content.trim())) return false;
+  if (isFromMe) return true;
+  return isTriggerAllowed(chatJid, sender, cfg);
+}
+
+// Seed the gating config on the volume if it doesn't exist yet, so the file is
+// always present and explicit (no silent allow-all fallback) and immediately
+// editable at runtime. Seeds triggerRegex with the current built-in pattern.
+export function ensureGatingConfig(pathOverride?: string): void {
+  const filePath = pathOverride ?? GATING_CONFIG_PATH;
+  if (fs.existsSync(filePath)) return;
+  const seed: SenderAllowlistConfig = {
+    default: {
+      allow: '*',
+      mode: 'trigger',
+      triggerRegex: TRIGGER_PATTERN.source,
+    },
+    chats: {},
+    logDenied: true,
+  };
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(seed, null, 2) + '\n');
+    logger.info({ path: filePath }, 'gating: seeded default config');
+  } catch (err) {
+    logger.warn({ err, path: filePath }, 'gating: could not seed config');
+  }
 }

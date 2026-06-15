@@ -40,12 +40,6 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'mount-allowlist.json',
 );
-export const SENDER_ALLOWLIST_PATH = path.join(
-  HOME_DIR,
-  '.config',
-  'nanoclaw',
-  'sender-allowlist.json',
-);
 export const STORE_DIR = IS_RAILWAY
   ? path.join(RAILWAY_VOLUME, 'store')
   : path.resolve(PROJECT_ROOT, 'store');
@@ -55,6 +49,12 @@ export const GROUPS_DIR = IS_RAILWAY
 export const DATA_DIR = IS_RAILWAY
   ? path.join(RAILWAY_VOLUME, 'data')
   : path.resolve(PROJECT_ROOT, 'data');
+
+// Gating config (trigger regex + per-user allowlist) lives on the persistent
+// volume so it survives redeploys and can be edited at runtime (by a human or
+// the agent) without a code change or redeploy. Read directly by the host
+// gating logic — never routed through the agent.
+export const GATING_CONFIG_PATH = path.join(DATA_DIR, 'gating.json');
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
