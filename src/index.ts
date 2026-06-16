@@ -770,8 +770,19 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Gate: only store messages for explicitly registered groups/chats.
+      // Unregistered WhatsApp groups and other unknown chats are completely
+      // ignored — not stored, not processed.
+      if (!registeredGroups[chatJid]) {
+        logger.debug(
+          { chatJid },
+          'Ignoring message from unregistered chat (not stored)',
+        );
+        return;
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+      if (!msg.is_from_me && !msg.is_bot_message) {
         const cfg = loadSenderAllowlist();
         if (
           shouldDropMessage(chatJid, cfg) &&
@@ -800,12 +811,16 @@ async function main(): Promise<void> {
       // Auto-register new chats on the fly (not just at startup).
       // This ensures DMs from Telegram, WhatsApp, etc. are picked up
       // even if the channel connected after the startup auto-register ran.
+      // NOTE: WhatsApp groups (@g.us) are intentionally excluded — they must
+      // be explicitly registered via the register_group tool. Auto-registering
+      // them would cause every group the bot is a member of to receive and
+      // store messages, even groups the user never intended to connect.
       if (!registeredGroups[chatJid] && name) {
         let prefix: string | undefined;
         if (chatJid.startsWith('slack:')) prefix = 'slack';
         else if (chatJid.startsWith('tg:')) prefix = 'tg';
         else if (chatJid.startsWith('dc:')) prefix = 'dc';
-        else if (chatJid.includes('@g.us')) prefix = 'wa-group';
+        // wa-group (@g.us) intentionally omitted — explicit registration only
         else if (chatJid.includes('@s.whatsapp.net')) prefix = 'wa';
 
         if (prefix) {
@@ -1395,7 +1410,11 @@ async function main(): Promise<void> {
 
   // Auto-register any group channels the bot is a member of that aren't
   // already registered. Runs on every startup so newly-added channels
-  // (Slack, Telegram, Discord, WhatsApp) are picked up automatically.
+  // (Slack, Telegram, Discord, WhatsApp DMs) are picked up automatically.
+  // NOTE: WhatsApp groups (@g.us) are intentionally excluded from auto-
+  // registration. They must be explicitly registered via the register_group
+  // tool to prevent storing/processing messages from groups the user hasn't
+  // connected to Nova.
   {
     await Promise.all(
       channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(false)),
@@ -1408,7 +1427,7 @@ async function main(): Promise<void> {
         if (chat.jid.startsWith('slack:')) prefix = 'slack';
         else if (chat.jid.startsWith('tg:')) prefix = 'tg';
         else if (chat.jid.startsWith('dc:')) prefix = 'dc';
-        else if (chat.jid.includes('@g.us')) prefix = 'wa-group';
+        // @g.us (WhatsApp groups) intentionally omitted — explicit registration only
         else if (chat.jid.includes('@s.whatsapp.net')) prefix = 'wa';
         else continue; // skip unknown JID formats
 
