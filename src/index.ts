@@ -13,6 +13,7 @@ import {
   SLACK_MAIN_CHANNEL_ID,
   STORE_DIR,
   TIMEZONE,
+  TRIGGER_PATTERN,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -1104,7 +1105,8 @@ async function main(): Promise<void> {
         const channelJid =
           channelParam && channelParam !== 'all' ? channelParam : undefined;
 
-        const rows = getAllMessages(limit, channelJid);
+        // Fetch a larger pool so post-filter still honours the requested limit
+        const rows = getAllMessages(limit * 10, channelJid);
 
         // Derive a friendly "channel" label from chat_jid
         function deriveChannel(chatJid: string): string {
@@ -1117,7 +1119,17 @@ async function main(): Promise<void> {
           return 'unknown';
         }
 
-        const messages = rows.map((row) => ({
+        // Only surface Nova-related messages to the web chat UI:
+        //   • is_bot_message = true  → Nova's own responses
+        //   • content matches TRIGGER_PATTERN → the message that triggered Nova
+        // Regular WhatsApp conversation that has nothing to do with Nova is excluded.
+        const novaRows = rows.filter(
+          (row) =>
+            row.is_bot_message ||
+            TRIGGER_PATTERN.test((row.content ?? '').trim()),
+        );
+
+        const messages = novaRows.slice(-limit).map((row) => ({
           id: row.id,
           chat_jid: row.chat_jid,
           channel: deriveChannel(row.chat_jid),
@@ -1159,8 +1171,20 @@ async function main(): Promise<void> {
           return 'unknown';
         }
 
-        const rows = getMessagesSinceTimestamp(since, 50);
-        const messages = rows.map((row) => ({
+        // Fetch a larger pool so post-filter still returns up to 50 nova messages
+        const rows = getMessagesSinceTimestamp(since, 500);
+
+        // Only surface Nova-related messages to the web chat UI:
+        //   • is_bot_message = true  → Nova's own responses
+        //   • content matches TRIGGER_PATTERN → the message that triggered Nova
+        // Regular WhatsApp conversation that has nothing to do with Nova is excluded.
+        const novaRows = rows.filter(
+          (row) =>
+            row.is_bot_message ||
+            TRIGGER_PATTERN.test((row.content ?? '').trim()),
+        );
+
+        const messages = novaRows.slice(0, 50).map((row) => ({
           id: row.id,
           chat_jid: row.chat_jid,
           channel: deriveChannel(row.chat_jid),
